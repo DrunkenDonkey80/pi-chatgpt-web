@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendOp, pendingOps, markOp, findOp, type Op } from "./state";
+import { appendOp, pendingOps, markOp, findOp, type Op } from "./state.ts";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SPOOL = path.join(ROOT, "spool");
@@ -23,7 +23,7 @@ const NEED_BUDGET = 64_000;
 const HANDOFF_CHARS = 6000;
 
 // ChatGPT asked for files: only ever read inside this workspace, bounded.
-function needRequest(answer: string): string[] | null {
+export function needRequest(answer: string): string[] | null {
   const m = /^\s*NEED:\s*(.+)$/im.exec(answer || "");
   if (!m) return null;
   const paths = m[1]
@@ -34,7 +34,7 @@ function needRequest(answer: string): string[] | null {
   return paths.length ? paths : null;
 }
 
-function readRequested(paths: string[]): string {
+export function readRequested(paths: string[]): string {
   const out: string[] = [];
   let budget = NEED_BUDGET;
   for (const p of paths) {
@@ -70,7 +70,7 @@ function readRequested(paths: string[]): string {
 }
 
 // handoff: prepend recent session transcript so the question isn't out of the blue.
-function recentTranscript(ctx: any): string {
+export function recentTranscript(ctx: any): string {
   const file = ctx?.sessionManager?.getSessionFile?.();
   if (!file || !fs.existsSync(file)) return "";
   const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
@@ -101,10 +101,7 @@ function recentTranscript(ctx: any): string {
 }
 
 // "handoff [focus]: question" | "handoff question" -> a self-summarizing prompt
-async function buildHandoff(
-  ctx: any,
-  rest: string,
-): Promise<string | null> {
+export async function buildHandoff(ctx: any, rest: string): Promise<string | null> {
   const colon = rest.indexOf(":");
   const focus = colon === -1 ? "" : rest.slice(0, colon).trim();
   const question = (colon === -1 ? rest : rest.slice(colon + 1)).trim();
@@ -418,7 +415,10 @@ export default function (pi: ExtensionAPI) {
       const rest = sp === -1 ? "" : a.slice(sp + 1).trim();
       if (sub === "start") {
         if (/^handoff\b/i.test(rest)) {
-          const q = await buildHandoff(ctx, rest.replace(/^handoff\b/i, "").trim());
+          const q = await buildHandoff(
+            ctx,
+            rest.replace(/^handoff\b/i, "").trim(),
+          );
           return q ? runAsk(pi, ctx, q, "side-start") : undefined;
         }
         return runAsk(pi, ctx, rest, "side-start");
