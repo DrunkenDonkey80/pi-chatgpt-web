@@ -3,13 +3,29 @@
   "name": "pi-chatgpt-web bridge",
   "version": "0.1.0",
   "description": "Bridges pi consultations into chatgpt.com in this browser",
-  "permissions": ["nativeMessaging", "tabs", "storage"],
-  "host_permissions": ["https://chatgpt.com/*"],
-  "background": { "service_worker": "background.js" },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3lKZ8emJa3D5BIwX7+u/HtCJm90H9uF26tgo0EVL5wjXZmCjDOvdrOQZGjjKywrl7ONgQe4xzn+/SOTwV6bcuz/1cunBTVDKagPP1H5TkXDCY7DkPZxHnhoOBKVOpI0c3Z7A6oZTPwY4nax53YQrznxVTpoe5m2mui3vxS/p5/W5P4KYixKnMuoiEClmxOhZEl5YdCJnT8KSTt7yBcrAeY0lRXduq336qwTspWS2HCJV8CoqjXxyJJ11NeyqijNN+G03JgOXYG99fG0Vkz2bO7ToBAkSgFktSWfhoKwFRG9DLUOW+1jXwqj7gsO/sk0EuuyLH9zuopbrZOKyv9N+YwIDAQAB",
+  "icons": {
+    "128": "icon128.png"
+  },
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

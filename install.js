@@ -121,6 +121,18 @@ if (process.argv.includes("--remove")) {
   process.exit(0);
 }
 
+// after a Web Store publish the ID is Google's, not ours: re-pin the host only
+if (process.argv.includes("--id")) {
+  const storeId = process.argv[process.argv.indexOf("--id") + 1];
+  if (!/^[a-p]{32}$/.test(storeId || ""))
+    throw new Error(`not a valid extension ID: ${storeId}`);
+  const h = readJson(HOST_MANIFEST);
+  h.allowed_origins = [`chrome-extension://${storeId}/`];
+  fs.writeFileSync(HOST_MANIFEST, JSON.stringify(h, null, 2) + "\n");
+  console.log(`native host pinned to chrome-extension://${storeId}/`);
+  process.exit(0);
+}
+
 if (!fs.existsSync(BROWSER)) throw new Error(`browser not found: ${BROWSER}`);
 
 // 1. pack (headless chrome packs and exits 0; first run also creates the key)
