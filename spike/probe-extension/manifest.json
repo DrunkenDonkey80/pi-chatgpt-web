@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "pi-chatgpt-web probe",
+  "version": "0.0.1",
+  "description": "Disposable feasibility probe: content script on chatgpt.com + native messaging feature detection.",
+  "permissions": ["nativeMessaging"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

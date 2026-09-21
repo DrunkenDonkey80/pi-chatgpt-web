@@ -1,0 +1,80 @@
+# pi-chatgpt-web
+
+Consult ChatGPT's web UI from [pi](https://github.com/earendil-works/pi-coding-agent) using your
+daily browser's logged-in session — no API key, no second browser, no debug port.
+
+```
+/chatgpt <question>   ask the persistent advisor thread, import question + answer
+/chatgpt              bridge status + pending operations
+/chatgpt recover      import captured-but-unimported answers
+```
+
+The imported consultation lands in the pi session as a custom message — visible to the model on
+its next turn, without spending an extra model call.
+
+## How it works
+
+```
+pi (/chatgpt command)
+  ↕ spool/ JSON files (command-<id>.json, result-<id>.json, heartbeat.json)
+native host (node, spawned by the browser)
+  ↕ Chrome native messaging port
+MV3 extension (background service worker → dedicated chatgpt.com tab → content script)
+  → fills the composer, sends, verifies the turn, waits for completion,
+    extracts the answer DOM→markdown
+```
+
+The extension only ever touches `chatgpt.com`. Nothing listens on the network. The host talks to
+exactly one pinned extension ID.
+
+## Setup (once)
+
+1. **Extension** — Helium/Chrome: `chrome://extensions` → Developer mode → *Load unpacked* →
+   this repo's `extension/` folder. Note the assigned extension ID.
+2. **Host manifest** — put that ID into `native-host/com.flex.pichatgptprobe.json`
+   (`allowed_origins`).
+3. **Registry** — `node native-host\regcheck.js` (writes HKCU entries pointing at the host
+   manifest; safe to re-run).
+4. **pi extension** — `pi install <path-to-this-repo>` or add the path to
+   `~/.pi/agent/settings.json`:
+
+   ```json
+   "extensions": ["C:\\path\\to\\pi-chatgpt-web"]
+   ```
+
+Keep the browser running while consulting. Unpacked extension IDs derive from the folder's
+absolute path — if you move `extension/`, re-do steps 1–3.
+
+## Use
+
+Ask from any pi session:
+
+```
+/chatgpt how do I idiomatically retry on 429 in axios?
+```
+
+Follow-ups reuse one advisor conversation. `/chatgpt` (bare) reports bridge status and pending
+operations; `/chatgpt recover` imports answers that were captured but never made it into a
+session (e.g. pi quit mid-consultation).
+
+## Disable / remove
+
+- Disable the extension in the browser (the host exits with its port).
+- Remove the pi extension entry.
+- Registry entries become inert; delete them if you want:
+  `HKCU\Software\Chromium\NativeMessagingHosts\com.flex.pichatgptprobe` (and the
+  `Google\Chrome` / Helium variants).
+
+## Privacy
+
+`spool/` (gitignored) contains your questions and answers in plain text, plus a host log of
+bridge messages. Nothing leaves your machine except the questions you explicitly send to
+chatgpt.com through your normal logged-in browser session. Pi's context is never sent — only
+the text you type after `/chatgpt`.
+
+Driving the web UI is automated use of ChatGPT; that's your account risk to own.
+
+## Status
+
+M0–M2 done (probes, in-page send/extract, full bridge + import). M3 (`/tempgpt` — real
+temporary chat per question) in progress. See `PLAN.md` and `spike/NOTES.md`.

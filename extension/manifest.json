@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "pi-chatgpt-web bridge",
+  "version": "0.1.0",
+  "description": "Bridges pi consultations into chatgpt.com in this browser",
+  "permissions": ["nativeMessaging", "tabs", "storage"],
+  "host_permissions": ["https://chatgpt.com/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
