@@ -100,6 +100,11 @@
             "temporary-chat indicator not found — refusing to send to a normal chat",
           );
       }
+      const draft = (composer.textContent || "").trim();
+      if (draft)
+        throw new Error(
+          `composer has a draft (${draft.length} chars) — refusing to overwrite; clear it in the tab first`,
+        );
       status("filling composer…");
       composer.focus();
       document.execCommand("selectAll");

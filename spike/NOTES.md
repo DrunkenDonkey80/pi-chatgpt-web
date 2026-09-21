@@ -189,3 +189,29 @@ Deferred: preview/edit-before-import (import is immediate and fully visible in t
 block; add a confirm step only if real usage wants one).
 
 **M4 exit criteria met.** Next: M5 (hardening + README) per PLAN.md.
+
+## Milestone 5 — hardening: PASS (2026-09-21)
+
+Failure-matrix pass (PLAN §11) + fixes:
+
+1. **recover() was mode-blind and non-idempotent.** Fixed: imports only
+   `advisor|temp|side-summary|side-last`; control results (side-start/close/new) and failed results
+   are consumed, never imported; already-imported ids (crash window) skipped; late failed results
+   close needs-attention ops; existing journal ops are updated instead of duplicated (`findOp` in
+   state.ts).
+2. **temp/advisor sendResult lacked `mode`** — a temp result recovered after a pi timeout would
+   import labelled as advisor (observed live on the M3 temp result). Both branches now tag `mode`.
+3. **Draft guard (content.js):** if the composer holds user draft text, abort — never type into a
+   conversation the user is composing in.
+4. **regcheck.js --remove:** deletes the HKCU entries (full disable; files stay).
+5. **Bridge-down hint** now mentions the moved-extension/new-ID case (re-run regcheck).
+
+Verified headless: `/chatgpt recover` on the M4 leftovers → 2 imported (side-summary, side-last,
+correct labels), 4 skipped/consumed (control + stale M2 failure); second run = nothing to recover
+(files consumed = idempotence). `node --check` clean on all bridge JS.
+
+Local-data documentation added to README (retention table for every spool file, secrets warning,
+how to purge). Deferred/manual: live disable/reload toggle test (user, one toggle), draft-guard
+   live behavior (code-reviewed), host.log rotation (none — delete anytime, documented).
+
+**M5 exit criteria met. M0–M5 complete.**

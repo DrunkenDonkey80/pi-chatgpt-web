@@ -71,6 +71,23 @@ session (e.g. pi quit mid-consultation).
   `HKCU\Software\Chromium\NativeMessagingHosts\com.flex.pichatgptprobe` (and the
   `Google\Chrome` / Helium variants).
 
+## Local data & retention
+
+Everything private lives in `spool/` (gitignored):
+
+| file | contents | lifetime |
+| --- | --- | --- |
+| `command-<id>.json` | outgoing question | consumed on ack |
+| `result-<id>.json` | question + answer + conversation URL | until imported (`/chatgpt recover`) |
+| `heartbeat.json` | host pid + timestamp | rewritten every few seconds |
+| `host.log` | full bridge messages (includes Q&A) | grows forever — delete anytime |
+| `journal.jsonl` | operation history (questions, URLs, statuses) | append-only |
+
+Delete the contents of `spool/` any time you want a clean slate; the bridge recreates what it
+needs (already-imported consultations stay imported). The extension itself stores only the side
+discussion conversation URL in `chrome.storage.local`. Since questions and answers sit on disk in
+plaintext, **don't put secrets in `/chatgpt` questions**.
+
 ## Privacy
 
 `spool/` (gitignored) contains your questions and answers in plain text, plus a host log of

@@ -1,5 +1,7 @@
 // Query/fix the native-messaging host registry entries (both Chromium and
 // Chrome roots, as read from Helium's chrome.dll). Safe to re-run anytime.
+// `node regcheck.js --remove` deletes the entries (full disable; the host
+// manifest and files stay on disk).
 const { execFileSync } = require("child_process");
 const MANIFEST =
   "C:\\SOFT\\git\\pi-chatgpt-web\\native-host\\com.flex.pichatgptprobe.json";
@@ -13,6 +15,15 @@ const roots = [
 
 for (const r of roots) {
   const key = `HKCU\\${r}\\NativeMessagingHosts\\${HOST}`;
+  if (process.argv.includes("--remove")) {
+    try {
+      execFileSync("reg", ["delete", key, "/f"]);
+      console.log(`${r}: deleted`);
+    } catch {
+      console.log(`${r}: not present`);
+    }
+    continue;
+  }
   let current = "";
   try {
     const out = execFileSync("reg", ["query", key, "/ve"]).toString();

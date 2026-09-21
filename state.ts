@@ -55,6 +55,10 @@ export function markOp(id: string, patch: Partial<Op>) {
     fs.renameSync(tmp, FILE);
 }
 
+export function findOp(id: string): Op | undefined {
+    return readOps().find((o) => o.id === id);
+}
+
 export function pendingOps(): Op[] {
     return readOps().filter(
         (o) => o.status !== "imported" && o.status !== "failed",

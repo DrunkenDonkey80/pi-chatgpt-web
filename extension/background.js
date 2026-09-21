@@ -88,7 +88,7 @@ async function handleCommand(cmd) {
           ASK_TIMEOUT_MS,
           "temporary chat did not finish in time",
         );
-        sendResult({ id: cmd.id, ...res });
+        sendResult({ id: cmd.id, ...res, mode: "temp" });
       } finally {
         try {
           await chrome.tabs.remove(tab.id);
@@ -111,7 +111,7 @@ async function handleCommand(cmd) {
       ASK_TIMEOUT_MS,
       "chatgpt tab did not finish in time",
     );
-    sendResult({ id: cmd.id, ...res });
+    sendResult({ id: cmd.id, ...res, mode: "advisor" });
   } catch (e) {
     sendResult({
       id: cmd.id,

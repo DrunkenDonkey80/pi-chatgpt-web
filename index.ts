@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendOp, pendingOps, markOp, type Op } from "./state";
+import { appendOp, pendingOps, markOp, findOp, type Op } from "./state";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SPOOL = path.join(ROOT, "spool");
@@ -107,7 +107,7 @@ async function runAsk(
   const st = bridgeStatus();
   if (!st.up) {
     ctx.ui.notify(
-      `bridge down (${st.detail}). Is Helium running with the bridge extension enabled?`,
+      `bridge down (${st.detail}). Is Helium running with the bridge extension enabled? Extension moved (new ID)? re-run native-host/regcheck.js`,
       "error",
     );
     return;
@@ -176,8 +176,12 @@ async function runAsk(
   }
 }
 
+// modes whose results are importable content; side-start/close/new are control ops
+const IMPORT_MODES = new Set(["advisor", "temp", "side-summary", "side-last"]);
+
 function recover(pi: ExtensionAPI, ctx: any) {
   let found = 0;
+  let skipped = 0;
   let files: string[] = [];
   try {
     files = fs.readdirSync(SPOOL);
@@ -186,23 +190,39 @@ function recover(pi: ExtensionAPI, ctx: any) {
     if (!f.startsWith("result-") || !f.endsWith(".json")) continue;
     const id = f.slice("result-".length, -".json".length);
     const r = readJson(path.join(SPOOL, f));
-    if (!r || !r.msg || !r.msg.ok) continue;
+    if (!r || !r.msg || !r.msg.ok) {
+      // failed result: close any needs-attention op, consume the file
+      if (r?.msg?.error && findOp(id))
+        markOp(id, { status: "failed", error: r.msg.error });
+      fs.rmSync(path.join(SPOOL, f), { force: true });
+      skipped++;
+      continue;
+    }
+    const mode = r.msg.mode || "advisor";
+    if (!IMPORT_MODES.has(mode) || findOp(id)?.status === "imported") {
+      // control op or crash-window duplicate: consume, never import
+      fs.rmSync(path.join(SPOOL, f), { force: true });
+      skipped++;
+      continue;
+    }
+    const existing = findOp(id);
     const op: Op = {
       id,
       ts: r.ts,
       question: r.msg.question || "(unknown)",
-      mode: r.msg.mode || "advisor",
+      mode,
       status: "imported",
       url: r.msg.url,
     };
-    appendOp(op);
+    if (existing) markOp(id, { status: "imported", url: r.msg.url });
+    else appendOp(op);
     importConsultation(pi, op, r.msg.answer, r.msg.url);
     fs.rmSync(path.join(SPOOL, f), { force: true });
     found++;
   }
   ctx.ui.notify(
-    found
-      ? `imported ${found} captured consultation(s)`
+    found || skipped
+      ? `recovered: ${found} imported, ${skipped} skipped (failed/control/duplicate)`
       : "nothing to recover (no captured results in spool)",
     "info",
   );
