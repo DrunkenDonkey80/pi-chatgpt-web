@@ -16,6 +16,129 @@ const HEARTBEAT_STALE_MS = 15_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const CWD = process.cwd();
+const NEED_FOOTER =
+  "\n\n(Need repo files to answer? Reply with only: NEED: path, path — I'll send them next turn. `NEED: .` lists the tree.)";
+const NEED_BUDGET = 64_000;
+const HANDOFF_CHARS = 6000;
+
+// ChatGPT asked for files: only ever read inside this workspace, bounded.
+function needRequest(answer: string): string[] | null {
+  const m = /^\s*NEED:\s*(.+)$/im.exec(answer || "");
+  if (!m) return null;
+  const paths = m[1]
+    .split(",")
+    .map((s) => s.trim().replace(/^["'`]+|["'`]+$/g, ""))
+    .filter(Boolean)
+    .slice(0, 8);
+  return paths.length ? paths : null;
+}
+
+function readRequested(paths: string[]): string {
+  const out: string[] = [];
+  let budget = NEED_BUDGET;
+  for (const p of paths) {
+    const abs = path.resolve(CWD, p);
+    if (abs !== CWD && !abs.startsWith(CWD + path.sep)) {
+      out.push(`${p}: refused (outside the workspace)`);
+      continue;
+    }
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(abs);
+    } catch {
+      out.push(`${p}: not found`);
+      continue;
+    }
+    if (stat.isDirectory()) {
+      const names = fs
+        .readdirSync(abs)
+        .filter((n) => n !== "node_modules" && n !== ".git")
+        .slice(0, 200);
+      out.push(`--- ${p} (directory) ---\n${names.join("\n")}`);
+      continue;
+    }
+    const body = fs.readFileSync(abs, "utf8").slice(0, budget);
+    budget -= body.length;
+    out.push(`--- ${p} ---\n${body}`);
+    if (budget <= 0) {
+      out.push("(size budget reached — ask for fewer or smaller files)");
+      break;
+    }
+  }
+  return out.join("\n\n");
+}
+
+// handoff: prepend recent session transcript so the question isn't out of the blue.
+function recentTranscript(ctx: any): string {
+  const file = ctx?.sessionManager?.getSessionFile?.();
+  if (!file || !fs.existsSync(file)) return "";
+  const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+  const parts: string[] = [];
+  let size = 0;
+  for (let i = lines.length - 1; i >= 0 && size < HANDOFF_CHARS; i--) {
+    let e: any;
+    try {
+      e = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+    const msg = e.message ?? e;
+    if (msg.role !== "user" && msg.role !== "assistant") continue;
+    const text = Array.isArray(msg.content)
+      ? msg.content
+          .filter((c: any) => c.type === "text")
+          .map((c: any) => c.text)
+          .join("\n")
+      : typeof msg.content === "string"
+        ? msg.content
+        : "";
+    if (!text.trim()) continue;
+    parts.unshift(`${msg.role}: ${text.trim()}`);
+    size += text.length;
+  }
+  return parts.join("\n\n").slice(-HANDOFF_CHARS);
+}
+
+// "handoff [focus]: question" | "handoff question" -> a self-summarizing prompt
+async function buildHandoff(
+  ctx: any,
+  rest: string,
+): Promise<string | null> {
+  const colon = rest.indexOf(":");
+  const focus = colon === -1 ? "" : rest.slice(0, colon).trim();
+  const question = (colon === -1 ? rest : rest.slice(colon + 1)).trim();
+  if (!question) {
+    ctx.ui.notify("handoff needs a question after it", "error");
+    return null;
+  }
+  const transcript = recentTranscript(ctx);
+  if (!transcript) {
+    ctx.ui.notify(
+      "no session transcript on disk yet — sending the question alone",
+      "info",
+    );
+    return question;
+  }
+  const ok = await ctx.ui.confirm(
+    "Send session context?",
+    `${transcript.length} chars of recent transcript will be sent to ChatGPT.`,
+  );
+  if (!ok) return null;
+  return [
+    "Context — recent transcript of my coding session (truncated, newest last):",
+    "<<<",
+    transcript,
+    ">>>",
+    "",
+    focus
+      ? `First summarize what matters about: ${focus}.`
+      : "First summarize where we are in 3-6 bullets.",
+    "Then answer:",
+    question,
+  ].join("\n");
+}
+
 function readJson(file: string): any {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -103,6 +226,7 @@ async function runAsk(
     | "side-last"
     | "side-close"
     | "side-new",
+  depth = 0,
 ) {
   const st = bridgeStatus();
   if (!st.up) {
@@ -120,9 +244,13 @@ async function runAsk(
     status: "submitted",
   };
   appendOp(op);
+  const wire =
+    mode === "advisor" || mode === "temp" || mode === "side-start"
+      ? question + NEED_FOOTER
+      : question;
   fs.writeFileSync(
     path.join(SPOOL, `command-${op.id}.json`),
-    JSON.stringify({ id: op.id, type: "ask", mode: op.mode, question }),
+    JSON.stringify({ id: op.id, type: "ask", mode: op.mode, question: wire }),
   );
   ctx.ui.notify("sent to ChatGPT — waiting for the answer…", "info");
 
@@ -150,6 +278,23 @@ async function runAsk(
             "info",
           );
         } else {
+          // advisor only: temp chats can't be continued, so a NEED there is imported as-is
+          const need =
+            op.mode === "advisor" && depth < 2 ? needRequest(m.answer) : null;
+          if (need) {
+            markOp(op.id, { status: "imported", url: m.url });
+            ctx.ui.notify(
+              `ChatGPT asked for: ${need.join(", ")} — sending them`,
+              "info",
+            );
+            return runAsk(
+              pi,
+              ctx,
+              `Files you requested:\n\n${readRequested(need)}`,
+              "advisor",
+              depth + 1,
+            );
+          }
           markOp(op.id, {
             status: "imported",
             url: m.url,
@@ -231,22 +376,30 @@ function recover(pi: ExtensionAPI, ctx: any) {
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("chatgpt", {
     description:
-      "/chatgpt <question> — consult ChatGPT web (advisor) and import Q+A; no args: status; recover: import captured",
+      "/chatgpt <question> | handoff [focus]: <question> — consult ChatGPT web (advisor) and import Q+A; no args: status; recover: import captured",
     handler: async (args: string, ctx: any) => {
       const a = (args || "").trim();
       if (a === "recover") return recover(pi, ctx);
       if (!a) return showStatus(ctx);
+      if (/^handoff\b/i.test(a)) {
+        const q = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim());
+        return q ? runAsk(pi, ctx, q, "advisor") : undefined;
+      }
       return runAsk(pi, ctx, a, "advisor");
     },
   });
 
   pi.registerCommand("tempgpt", {
     description:
-      "/tempgpt <question> — ask via a real Temporary Chat and import Q+A (never touches the advisor thread)",
+      "/tempgpt <question> | handoff [focus]: <question> — ask via a real Temporary Chat and import Q+A (never touches the advisor thread)",
     handler: async (args: string, ctx: any) => {
       const a = (args || "").trim();
       if (a === "recover") return recover(pi, ctx);
       if (!a) return showStatus(ctx);
+      if (/^handoff\b/i.test(a)) {
+        const q = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim());
+        return q ? runAsk(pi, ctx, q, "temp") : undefined;
+      }
       return runAsk(pi, ctx, a, "temp");
     },
   });
@@ -263,7 +416,13 @@ export default function (pi: ExtensionAPI) {
       const sp = a.indexOf(" ");
       const sub = sp === -1 ? a : a.slice(0, sp);
       const rest = sp === -1 ? "" : a.slice(sp + 1).trim();
-      if (sub === "start") return runAsk(pi, ctx, rest, "side-start");
+      if (sub === "start") {
+        if (/^handoff\b/i.test(rest)) {
+          const q = await buildHandoff(ctx, rest.replace(/^handoff\b/i, "").trim());
+          return q ? runAsk(pi, ctx, q, "side-start") : undefined;
+        }
+        return runAsk(pi, ctx, rest, "side-start");
+      }
       if (sub === "summary")
         return runAsk(
           pi,
