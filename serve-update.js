@@ -25,7 +25,7 @@ function extId() {
   const key = crypto.createPublicKey(fs.readFileSync(PEM, "utf8"));
   const der = key.export({ type: "spki", format: "der" });
   return [...crypto.createHash("sha256").update(der).digest().slice(0, 16)]
-    .map((b) => b.toString(16).padStart(2, ""))
+    .map((b) => b.toString(16).padStart(2, "0"))
     .join("")
     .split("")
     .map((c) => String.fromCharCode(97 + parseInt(c, 16)))

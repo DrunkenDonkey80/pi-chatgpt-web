@@ -1,0 +1,9 @@
+Windows Registry Editor Version 5.00
+
+; Removes the force-install policy — useless on a non-managed machine
+; (Chromium only auto-installs Web Store extensions unless enterprise managed).
+; Double-click, accept UAC.
+
+[-HKEY_CURRENT_USER\Software\Policies\Chromium\ExtensionInstallForcelist]
+
+[-HKEY_CURRENT_USER\Software\Policies\Helium\ExtensionInstallForcelist]

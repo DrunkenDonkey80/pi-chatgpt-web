@@ -52,7 +52,7 @@ function idFromPem(pemPath) {
   const key = crypto.createPublicKey(fs.readFileSync(pemPath, "utf8"));
   const der = key.export({ type: "spki", format: "der" });
   return [...crypto.createHash("sha256").update(der).digest().slice(0, 16)]
-    .map((b) => b.toString(16).padStart(2, ""))
+    .map((b) => b.toString(16).padStart(2, "0"))
     .join("")
     .split("")
     .map((c) => String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16)))
@@ -157,11 +157,25 @@ if (!fs.existsSync(PEM)) {
     const out = [];
     let i = 0;
     while (i < buf.length) {
-      let tag = 0, sh = 0, more = true;
-      while (more) { const x = buf[i++]; tag |= (x & 0x7f) << sh; more = x & 0x80; sh += 7; }
+      let tag = 0,
+        sh = 0,
+        more = true;
+      while (more) {
+        const x = buf[i++];
+        tag |= (x & 0x7f) << sh;
+        more = x & 0x80;
+        sh += 7;
+      }
       if ((tag & 7) !== 2) break;
-      let len = 0; sh = 0; more = true;
-      while (more) { const x = buf[i++]; len |= (x & 0x7f) << sh; more = x & 0x80; sh += 7; }
+      let len = 0;
+      sh = 0;
+      more = true;
+      while (more) {
+        const x = buf[i++];
+        len |= (x & 0x7f) << sh;
+        more = x & 0x80;
+        sh += 7;
+      }
       out.push({ field: tag >>> 3, buf: buf.slice(i, i + len) });
       i += len;
     }
@@ -183,16 +197,29 @@ if (!fs.existsSync(PEM)) {
   const sig = crypto.createSign("RSA-SHA256").update(sd).sign(pemPriv);
   const lv = (n) => {
     const o = [];
-    do { let x = n & 0x7f; n >>>= 7; if (n) x |= 0x80; o.push(x); } while (n);
+    do {
+      let x = n & 0x7f;
+      n >>>= 7;
+      if (n) x |= 0x80;
+      o.push(x);
+    } while (n);
     return Buffer.from(o);
   };
   const proofBody = Buffer.concat([
-    Buffer.from([0x0a]), lv(pub.length), pub,
-    Buffer.from([0x12]), lv(sig.length), sig,
+    Buffer.from([0x0a]),
+    lv(pub.length),
+    pub,
+    Buffer.from([0x12]),
+    lv(sig.length),
+    sig,
   ]);
   const header = Buffer.concat([
-    Buffer.from([0x12]), lv(proofBody.length), proofBody,
-    Buffer.from([0x82, 0xf1, 0x04]), lv(sd.length), sd,
+    Buffer.from([0x12]),
+    lv(proofBody.length),
+    proofBody,
+    Buffer.from([0x82, 0xf1, 0x04]),
+    lv(sd.length),
+    sd,
   ]);
   const l = Buffer.alloc(4);
   l.writeUInt32LE(header.length);
