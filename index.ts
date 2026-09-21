@@ -4,7 +4,9 @@
 // answer into this session without triggering a model call.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendOp, pendingOps, markOp, findOp, type Op } from "./state.ts";
@@ -20,7 +22,161 @@ const CWD = process.cwd();
 const NEED_FOOTER =
   "\n\n(Need repo files to answer? Reply with only: NEED: path, path — I'll send them next turn. `NEED: .` lists the tree.)";
 const NEED_BUDGET = 64_000;
-const HANDOFF_CHARS = 6000;
+
+// ---- user settings (spool/settings.json, /chatgpt setup) --------------------
+interface Cfg {
+  handoffMaxChars: number; // transcript budget for handoff, default 6000
+  summaryModel: string; // "" = current session model
+  summaryEffort: string; // "" = model default; else minimal|low|medium|high|xhigh
+  advisorSentUpTo: { id: string; ts: number } | null; // what was already sent
+}
+const SETTINGS =
+  process.env.PI_CHATGPT_SETTINGS || path.join(SPOOL, "settings.json");
+const CFG_DEFAULTS: Cfg = {
+  handoffMaxChars: 6000,
+  summaryModel: "",
+  summaryEffort: "minimal",
+  advisorSentUpTo: null,
+};
+
+function loadCfg(): Cfg {
+  return { ...CFG_DEFAULTS, ...(readJson(SETTINGS) ?? {}) } as Cfg;
+}
+
+function saveCfg(c: Cfg) {
+  fs.mkdirSync(SPOOL, { recursive: true });
+  fs.writeFileSync(SETTINGS, JSON.stringify(c, null, 2) + "\n");
+}
+
+// ---- transcript -> question/answer pairs ------------------------------------
+export interface Pair {
+  user: string;
+  assistant: string;
+  id: string;
+  ts: number;
+}
+
+function entryText(e: any): { role: string; text: string } | null {
+  const msg = e.message ?? e;
+  if (msg.role !== "user" && msg.role !== "assistant") return null;
+  let text = "";
+  if (Array.isArray(msg.content))
+    text = msg.content
+      .filter((c: any) => c.type === "text")
+      .map((c: any) => c.text)
+      .join("\n");
+  else if (typeof msg.content === "string") text = msg.content;
+  text = text.trim();
+  return text ? { role: msg.role, text } : null;
+}
+
+function entryTs(e: any): number {
+  if (typeof e.timestamp === "string") return Date.parse(e.timestamp) || 0;
+  if (typeof e.timestamp === "number") return e.timestamp;
+  return 0;
+}
+
+// complete user+assistant pairs (oldest -> newest); `since` skips everything
+// up to and including the cursor entry (by id, falling back to ts).
+export function transcriptPairs(
+  file: string,
+  since?: { id?: string; ts?: number } | null,
+): { pairs: Pair[]; lastId: string; lastTs: number } {
+  const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+  let cursorIdx = -1;
+  if (since?.id) {
+    for (let i = 0; i < lines.length; i++) {
+      try {
+        if (JSON.parse(lines[i]).id === since.id) {
+          cursorIdx = i;
+          break;
+        }
+      } catch {
+        /* not json */
+      }
+    }
+  }
+  const useTs = !!since && (since.id ? cursorIdx === -1 : true) && !!since.ts;
+  const pairs: Pair[] = [];
+  let lastId = "";
+  let lastTs = 0;
+  let pendingUser: string | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    let e: any;
+    try {
+      e = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+    const ts = entryTs(e);
+    if (ts > lastTs) lastTs = ts;
+    if (e.id) lastId = e.id;
+    if (i <= cursorIdx) {
+      if (entryText(e)?.role === "user") pendingUser = null;
+      continue;
+    }
+    if (useTs && ts > 0 && ts <= since!.ts!) continue;
+    const t = entryText(e);
+    if (!t) continue;
+    if (t.role === "user") pendingUser = t.text;
+    else {
+      pairs.push({
+        user: pendingUser ?? "",
+        assistant: t.text,
+        id: e.id ?? lastId,
+        ts: lastTs,
+      });
+      pendingUser = null;
+    }
+  }
+  return { pairs, lastId, lastTs };
+}
+
+// newest-first inclusion with 10% overshoot tolerance; >= 1 pair always kept;
+// never cuts inside a message.
+export function budgetPairs(pairs: Pair[], max: number): Pair[] {
+  const tol = Math.floor(max * 1.1);
+  const kept: Pair[] = [];
+  let total = 0;
+  for (let i = pairs.length - 1; i >= 0; i--) {
+    const len = pairs[i].user.length + pairs[i].assistant.length;
+    if (kept.length > 0 && total + len > tol) break;
+    kept.unshift(pairs[i]);
+    total += len;
+  }
+  return kept;
+}
+
+export function formatPairs(pairs: Pair[]): string {
+  return pairs
+    .map(
+      (p) =>
+        (p.user ? `user: ${p.user}\n\n` : "") + `assistant: ${p.assistant}`,
+    )
+    .join("\n\n");
+}
+
+// ---- local summarizer: a fresh `pi -p` with the slice embedded ---------------
+function piCli(): string {
+  try {
+    return fileURLToPath(
+      import.meta.resolve("@earendil-works/pi-coding-agent/package.json"),
+    ).replace(/[\\/]package\.json$/, "/dist/bundle/cli.js");
+  } catch {
+    return path.join(
+      os.homedir(),
+      "AppData",
+      "Roaming",
+      "npm",
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+      "dist",
+      "bundle",
+      "cli.js",
+    );
+  }
+}
 
 // ChatGPT asked for files: only ever read inside this workspace, bounded.
 export function needRequest(answer: string): string[] | null {
@@ -73,37 +229,32 @@ export function readRequested(paths: string[]): string {
 export function recentTranscript(ctx: any): string {
   const file = ctx?.sessionManager?.getSessionFile?.();
   if (!file || !fs.existsSync(file)) return "";
-  const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
-  const parts: string[] = [];
-  let size = 0;
-  for (let i = lines.length - 1; i >= 0 && size < HANDOFF_CHARS; i--) {
-    let e: any;
-    try {
-      e = JSON.parse(lines[i]);
-    } catch {
-      continue;
-    }
-    const msg = e.message ?? e;
-    if (msg.role !== "user" && msg.role !== "assistant") continue;
-    let text = "";
-    if (Array.isArray(msg.content))
-      text = msg.content
-        .filter((c: any) => c.type === "text")
-        .map((c: any) => c.text)
-        .join("\n");
-    else if (typeof msg.content === "string") text = msg.content;
-    if (!text.trim()) continue;
-    parts.unshift(`${msg.role}: ${text.trim()}`);
-    size += text.length;
-  }
-  return parts.join("\n\n").slice(-HANDOFF_CHARS);
+  const { pairs } = transcriptPairs(file);
+  return formatPairs(budgetPairs(pairs, loadCfg().handoffMaxChars));
 }
 
-// "handoff [focus]: question" | "handoff question" -> a self-summarizing prompt
+// "handoff [focus]: question" | "handoff question" -> context + question.
+// No focus: budget-cut transcript pairs go out verbatim. A focus (incl. the
+// bare keyword "llm") makes a local pi summarize the slice first. Advisor
+// mode tracks a send-cursor so only new exchanges go out next time.
+export interface HandoffResult {
+  q: string;
+  label: string;
+  sentUpTo?: { id: string; ts: number };
+}
+
 export async function buildHandoff(
   ctx: any,
   rest: string,
-): Promise<{ q: string; label: string } | null> {
+  opts: {
+    mode?: string;
+    summarizer?: (
+      prompt: string,
+      model: string,
+      effort: string,
+    ) => Promise<string | null>;
+  } = {},
+): Promise<HandoffResult | null> {
   const colon = rest.indexOf(":");
   const focus = colon === -1 ? "" : rest.slice(0, colon).trim();
   const question = (colon === -1 ? rest : rest.slice(colon + 1)).trim();
@@ -111,34 +262,139 @@ export async function buildHandoff(
     ctx.ui.notify("handoff needs a question after it", "error");
     return null;
   }
-  const transcript = recentTranscript(ctx);
-  if (!transcript) {
+  const cfg = loadCfg();
+  const file = ctx?.sessionManager?.getSessionFile?.();
+  const isAdvisor = (opts.mode ?? "advisor") === "advisor";
+  const cursor = isAdvisor ? cfg.advisorSentUpTo : null;
+  const parsed =
+    file && fs.existsSync(file)
+      ? transcriptPairs(file, cursor)
+      : { pairs: [] as Pair[], lastId: "", lastTs: 0 };
+
+  const plain = async (): Promise<HandoffResult | null> => {
+    if (!parsed.pairs.length) {
+      ctx.ui.notify(
+        cursor
+          ? "nothing new since the last handoff — sending the question alone"
+          : "no session transcript on disk yet — sending the question alone",
+        "info",
+      );
+      return { q: question, label: question };
+    }
+    const transcript = formatPairs(
+      budgetPairs(parsed.pairs, cfg.handoffMaxChars),
+    );
+    const ok = await ctx.ui.confirm(
+      "Send session context?",
+      `${transcript.length} chars of recent transcript will be sent to ChatGPT.`,
+    );
+    if (!ok) return null;
+    return {
+      q: [
+        "Context — recent transcript of my coding session (newest last):",
+        "<<<",
+        transcript,
+        ">>>",
+        "",
+        focus
+          ? `First summarize what matters about: ${focus}.`
+          : "First summarize where we are in 3-6 bullets.",
+        "Then answer:",
+        question,
+      ].join("\n"),
+      label: question,
+      ...(isAdvisor
+        ? { sentUpTo: { id: parsed.lastId, ts: parsed.lastTs } }
+        : {}),
+    };
+  };
+
+  if (!focus) return plain();
+
+  // focused summary by a local model; falls back to the transcript variant
+  const slice = formatPairs(budgetPairs(parsed.pairs, cfg.handoffMaxChars));
+  if (!slice) {
     ctx.ui.notify(
-      "no session transcript on disk yet — sending the question alone",
+      "nothing to summarize — sending the transcript instead",
       "info",
     );
-    return { q: question, label: question };
+    return plain();
+  }
+  const model =
+    cfg.summaryModel ||
+    (typeof ctx.model === "string" ? ctx.model : ctx.model?.id) ||
+    "";
+  const topic = focus.toLowerCase() === "llm" ? "" : focus;
+  const prompt = `Summarize this coding-session transcript. Output ONLY a compact bullet summary${topic ? ` focused on: ${topic}` : ""}: key decisions, facts, state, open questions. No preamble.\n\n<<<\n${slice}\n>>>`;
+  ctx.ui.notify(`summarizing locally${model ? ` with ${model}` : ""}…`, "info");
+  const summarizer = opts.summarizer ?? piSummarize;
+  const summary = await summarizer(prompt, model, cfg.summaryEffort);
+  if (!summary) {
+    ctx.ui.notify(
+      "local summarizer failed — falling back to full transcript",
+      "warning",
+    );
+    return plain();
   }
   const ok = await ctx.ui.confirm(
-    "Send session context?",
-    `${transcript.length} chars of recent transcript will be sent to ChatGPT.`,
+    "Send local summary + question?",
+    `${summary.length} chars summarized${model ? ` by ${model}` : ""} will be sent to ChatGPT.`,
   );
   if (!ok) return null;
   return {
     q: [
-      "Context — recent transcript of my coding session (truncated, newest last):",
+      `Context — summary of my coding session${topic ? ` (focus: ${topic})` : ""}:`,
       "<<<",
-      transcript,
+      summary,
       ">>>",
       "",
-      focus
-        ? `First summarize what matters about: ${focus}.`
-        : "First summarize where we are in 3-6 bullets.",
-      "Then answer:",
+      "Now answer:",
       question,
     ].join("\n"),
     label: question,
+    ...(isAdvisor
+      ? { sentUpTo: { id: parsed.lastId, ts: parsed.lastTs } }
+      : {}),
   };
+}
+
+// throwaway pi run: the summarize-only prompt (with the budgeted transcript
+// slice inside) rides stdin, the summary comes back on stdout. Isolated from
+// this session and bounded by the slice — no --fork, no whole-session replay.
+async function piSummarize(
+  prompt: string,
+  model: string,
+  effort: string,
+): Promise<string | null> {
+  const args: string[] = [piCli(), "-p"];
+  if (model) args.push("--model", model);
+  if (effort) args.push("--effort", effort);
+  return await new Promise((resolve) => {
+    const child = spawn(process.execPath, args);
+    let out = "";
+    const finish = (v: string | null) => {
+      clearTimeout(timer);
+      try {
+        child.kill();
+      } catch {
+        /* already exited */
+      }
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish(null), 300_000);
+    child.stdout.on("data", (d: Buffer) => {
+      out += d;
+      if (out.length > 400_000) child.kill();
+    });
+    child.stderr.on("data", () => {});
+    child.on("error", () => finish(null));
+    child.on("close", (code: number) =>
+      finish(code === 0 && out.trim() ? out.trim() : null),
+    );
+    child.stdin.on("error", () => {});
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
 }
 
 function readJson(file: string): any {
@@ -234,7 +490,10 @@ async function runAsk(
     | "side-close"
     | "side-new",
   depth = 0,
-  importAs?: string,
+  opts?: {
+    importAs?: string;
+    sentUpTo?: { id: string; ts: number };
+  },
 ) {
   const st = bridgeStatus();
   if (!st.up) {
@@ -250,7 +509,7 @@ async function runAsk(
     question,
     mode,
     status: "submitted",
-    label: importAs,
+    label: opts?.importAs,
   };
   appendOp(op);
   const wire =
@@ -261,6 +520,13 @@ async function runAsk(
     path.join(SPOOL, `command-${op.id}.json`),
     JSON.stringify({ id: op.id, type: "ask", mode: op.mode, question: wire }),
   );
+  // advisor handoff cursor: ChatGPT now has everything up to here — later
+  // handoffs send only the delta
+  if (opts?.sentUpTo && mode === "advisor") {
+    const c = loadCfg();
+    c.advisorSentUpTo = opts.sentUpTo;
+    saveCfg(c);
+  }
   ctx.ui.notify("sent to ChatGPT — waiting for the answer…", "info");
 
   const resultFile = path.join(SPOOL, `result-${op.id}.json`);
@@ -302,7 +568,7 @@ async function runAsk(
               `Files you requested:\n\n${readRequested(need)}`,
               "advisor",
               depth + 1,
-              importAs ?? question,
+              { importAs: opts?.importAs ?? question },
             );
           }
           markOp(op.id, {
@@ -384,17 +650,103 @@ function recover(pi: ExtensionAPI, ctx: any) {
   );
 }
 
+// /chatgpt setup — handoff budget, summarizer model/effort, send-cursor
+async function setupMenu(ctx: any) {
+  const cfg = loadCfg();
+  const efforts = ["minimal", "low", "medium", "high", "xhigh"];
+  for (;;) {
+    const pick = await ctx.ui.select("pi-chatgpt-web setup", [
+      `handoff max size: ${cfg.handoffMaxChars} chars`,
+      `summary model: ${cfg.summaryModel || "(current session model)"}`,
+      `summary effort: ${cfg.summaryEffort || "(model default)"}`,
+      "reset advisor handoff cursor",
+      "done",
+    ]);
+    if (!pick || pick === "done") return;
+    if (pick.startsWith("handoff max size")) {
+      const v = await ctx.ui.input(
+        "max transcript chars per handoff",
+        String(cfg.handoffMaxChars),
+      );
+      const n = parseInt((v || "").replace(/[\s,]/g, ""), 10);
+      if (n >= 1000 && n <= 200000) {
+        cfg.handoffMaxChars = n;
+        saveCfg(cfg);
+      } else ctx.ui.notify("enter a number between 1000 and 200000", "error");
+    } else if (pick.startsWith("summary model")) {
+      const scoped = [
+        ...new Set(
+          (ctx.scopedModels ?? []).map(
+            (s: any) =>
+              `${s.model}${s.thinkingLevel ? `:${s.thinkingLevel}` : ""}`,
+          ),
+        ),
+      ];
+      const m = await ctx.ui.select("summary model", [
+        ...scoped,
+        "(current session model)",
+        "type a model id…",
+        "back",
+      ]);
+      if (m === "type a model id…") {
+        const t = await ctx.ui.input(
+          "model id (provider/id[:thinking])",
+          cfg.summaryModel,
+        );
+        if (t && t.trim()) {
+          cfg.summaryModel = t.trim();
+          saveCfg(cfg);
+        }
+      } else if (m === "(current session model)") {
+        cfg.summaryModel = "";
+        saveCfg(cfg);
+      } else if (m && m !== "back") {
+        cfg.summaryModel = m;
+        saveCfg(cfg);
+      }
+    } else if (pick.startsWith("summary effort")) {
+      const e = await ctx.ui.select("summary effort", [
+        "(model default)",
+        ...efforts,
+      ]);
+      if (e) {
+        cfg.summaryEffort = e === "(model default)" ? "" : e;
+        saveCfg(cfg);
+      }
+    } else if (pick.startsWith("reset")) {
+      if (
+        await ctx.ui.confirm(
+          "Reset send-cursor?",
+          "The next advisor handoff re-sends the full recent transcript.",
+        )
+      ) {
+        cfg.advisorSentUpTo = null;
+        saveCfg(cfg);
+        ctx.ui.notify("send-cursor reset", "info");
+      }
+    }
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("chatgpt", {
     description:
-      "/chatgpt <question> | handoff [focus]: <question> — consult ChatGPT web (advisor) and import Q+A; no args: status; recover: import captured",
+      "/chatgpt <question> | handoff [focus]: <question> — consult ChatGPT web (advisor) and import Q+A; no args: status; recover: import captured; setup: options",
     handler: async (args: string, ctx: any) => {
       const a = (args || "").trim();
       if (a === "recover") return recover(pi, ctx);
+      if (a === "setup") return setupMenu(ctx);
       if (!a) return showStatus(ctx);
       if (/^handoff\b/i.test(a)) {
-        const h = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim());
-        return h ? runAsk(pi, ctx, h.q, "advisor", 0, h.label) : undefined;
+        const h = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim(), {
+          mode: "advisor",
+        });
+        return h
+          ? runAsk(pi, ctx, h.q, "advisor", 0, {
+              importAs: h.label,
+              sentUpTo: h.sentUpTo,
+            })
+          : undefined;
       }
       return runAsk(pi, ctx, a, "advisor");
     },
@@ -408,8 +760,12 @@ export default function (pi: ExtensionAPI) {
       if (a === "recover") return recover(pi, ctx);
       if (!a) return showStatus(ctx);
       if (/^handoff\b/i.test(a)) {
-        const h = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim());
-        return h ? runAsk(pi, ctx, h.q, "temp", 0, h.label) : undefined;
+        const h = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim(), {
+          mode: "temp",
+        });
+        return h
+          ? runAsk(pi, ctx, h.q, "temp", 0, { importAs: h.label })
+          : undefined;
       }
       return runAsk(pi, ctx, a, "temp");
     },
@@ -432,9 +788,10 @@ export default function (pi: ExtensionAPI) {
           const h = await buildHandoff(
             ctx,
             rest.replace(/^handoff\b/i, "").trim(),
+            { mode: "side-start" },
           );
           return h
-            ? runAsk(pi, ctx, h.q, "side-start", 0, h.label)
+            ? runAsk(pi, ctx, h.q, "side-start", 0, { importAs: h.label })
             : undefined;
         }
         return runAsk(pi, ctx, rest, "side-start");

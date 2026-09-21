@@ -9,6 +9,7 @@ daily browser's logged-in session — no API key, no second browser, no debug po
 /chatgpt handoff <focus>: <q>    handoff that summarizes a specific topic, then answers
 /chatgpt                         bridge status + pending operations
 /chatgpt recover                 import captured-but-unimported answers
+/chatgpt setup                    handoff budget, summarizer model/effort, send-cursor reset
 /tempgpt <question>              ask via a real Temporary Chat (not saved to your history)
 /tempgpt handoff ...             handoff variant of the above
 /sidegpt start <q>               open (or resume) a side discussion tab — continue it in the browser
@@ -82,7 +83,16 @@ summarize first, then answer. Only your short question is imported back into the
 transcript never lands in pi's context a second time.
 
 With a focus: `/chatgpt handoff the message format: what do you think?` — everything before the
-first `:` names the topic to summarize; everything after is your question.
+first `:` names the topic to summarize; everything after is your question. The summary itself is
+made locally: a throwaway `pi -p` run (model + effort configurable in `/chatgpt setup`, default
+is the current session model) sees only the budgeted transcript slice, and its bullet summary —
+not the raw transcript — goes to ChatGPT. If the local summarizer fails, the handoff falls back
+to the plain transcript variant. `/chatgpt handoff llm: what?` uses the same mechanism but asks
+for a summary with no topic.
+
+The advisor thread remembers what it has already seen: after each handoff a send-cursor is
+saved, so the next handoff sends only the new exchanges (a handoff with nothing new sends your
+question alone). `/chatgpt setup` can reset the cursor; temp/side handoffs never move it.
 
 ### NEED: — ChatGPT can read your files
 
