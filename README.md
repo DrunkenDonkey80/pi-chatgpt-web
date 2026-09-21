@@ -4,15 +4,17 @@ Consult ChatGPT's web UI from [pi](https://github.com/earendil-works/pi-coding-a
 daily browser's logged-in session — no API key, no second browser, no debug port.
 
 ```
-/chatgpt <question>   ask the persistent advisor thread, import question + answer
-/chatgpt              bridge status + pending operations
-/chatgpt recover      import captured-but-unimported answers
-/tempgpt <question>   ask via a real Temporary Chat (not saved to your history)
-/tempgpt              bridge status + pending operations
-/sidegpt start <q>    open (or resume) a side discussion tab — continue it in the browser
-/sidegpt summary      import a ChatGPT-generated summary of the side discussion
-/sidegpt last         import just the last exchange from the side discussion
-/sidegpt close|new    close the tab (resumable) | reset the binding entirely
+/chatgpt <question>              ask the persistent advisor thread, import Q + A
+/chatgpt handoff <q>             same, but with recent session context prepended (you confirm first)
+/chatgpt handoff <focus>: <q>    handoff that summarizes a specific topic, then answers
+/chatgpt                         bridge status + pending operations
+/chatgpt recover                 import captured-but-unimported answers
+/tempgpt <question>              ask via a real Temporary Chat (not saved to your history)
+/tempgpt handoff ...             handoff variant of the above
+/sidegpt start <q>               open (or resume) a side discussion tab — continue it in the browser
+/sidegpt summary [focus]         import a ChatGPT-generated summary of the side discussion
+/sidegpt last                    import just the last exchange from the side discussion
+/sidegpt close | new             close the tab (resumable) | reset the binding entirely
 ```
 
 The imported consultation lands in the pi session as a custom message — visible to the model on
@@ -33,30 +35,35 @@ MV3 extension (background service worker → dedicated chatgpt.com tab → conte
 The extension only ever touches `chatgpt.com`. Nothing listens on the network. The host talks to
 exactly one pinned extension ID.
 
-## Setup (once)
+## Install (once, ~2 minutes)
 
-1. **Extension + host pin** — `node install.js`. Packs `extension/` into a signed
-   `extension.crx`, registers it as an external extension (no developer mode, no web store),
-   and pins the native host manifest to the resulting stable extension ID. Then fully quit
-   Helium (tray icon too) and relaunch — it appears in `chrome://extensions` as a normal
-   install. Remove any old unpacked copy.
-2. **Host registry** — `node native-host\regcheck.js` (writes HKCU entries pointing at the host
-   manifest; safe to re-run).
-3. **pi extension** — `pi install <path-to-this-repo>` or add the path to
-   `~/.pi/agent/settings.json`:
+1. **Pack + pin** — `node install.js`. Packs `extension/` into a signed `extension.crx`
+   (fixing Chromium 153's broken packer signature along the way), writes the native-host
+   registry entries, and pins the host manifest to the stable extension ID. If your browser
+   isn't Helium at the default path, edit `BROWSER` at the top of `install.js` first.
+2. **Native host** — `node native-host\regcheck.js` (HKCU registration for the messaging host;
+   safe to re-run anytime).
+3. **Load the extension** — `chrome://extensions` → enable **Developer mode** → **Load
+   unpacked** → select this repo's `extension/` folder. The manifest carries a committed key,
+   so the extension ID is **stable** (`ajlnbjgehaidkajobnhkmchjaknjnalj`) no matter where the
+   folder lives — it matches what `install.js` pinned, which is what makes the bridge work.
+4. **pi extension** — add this repo to the `packages` array in `~/.pi/agent/settings.json`:
 
    ```json
-   "extensions": ["C:\\path\\to\\pi-chatgpt-web"]
+   "packages": ["C:\\SOFT\\git\\pi-chatgpt-web"]
    ```
 
-The signing key (`extension.pem`) is committed, so the extension ID is **stable forever** —
-moving the folder or repacking keeps it. After editing `extension/`, re-run `node install.js`
-and restart the browser. Fallback: developer mode + *Load unpacked* still works, but the ID
-then depends on the folder's absolute path.
+   (Or just run pi inside the repo — `package.json` wires `index.ts` up automatically.)
+5. **Verify** — restart pi, run `/chatgpt` in any session: `bridge: UP`.
 
-## Use
+Why developer mode? Modern non-managed Chromium refuses every sideload route: self-hosted CRX
+registry installs are ignored, drag-dropped CRXs fail with `CRX_REQUIRED_PROOF_MISSING`
+(Google's counter-signature or nothing), and force-install policy only works on
+enterprise-managed machines. Unpacked-with-pinned-key is the one install that survives with a
+stable ID. `store-upload.zip` is kept ready if you ever want the unlisted-Chrome-Web-Store
+route instead.
 
-Ask from any pi session:
+## Using it
 
 ```
 /chatgpt how do I idiomatically retry on 429 in axios?
@@ -66,15 +73,37 @@ Follow-ups reuse one advisor conversation. `/chatgpt` (bare) reports bridge stat
 operations; `/chatgpt recover` imports answers that were captured but never made it into a
 session (e.g. pi quit mid-consultation).
 
+### handoff — "where were we?"
+
+`/chatgpt handoff what do you think about our ideas?` prepends the last ~6k chars of your
+current session transcript (user + assistant text only) so ChatGPT knows the context — **you
+get a confirmation prompt with the exact size before anything is sent**. ChatGPT is asked to
+summarize first, then answer. Only your short question is imported back into the session; the
+transcript never lands in pi's context a second time.
+
+With a focus: `/chatgpt handoff the message format: what do you think?` — everything before the
+first `:` names the topic to summarize; everything after is your question.
+
+### NEED: — ChatGPT can read your files
+
+Every outgoing question carries a one-line footer inviting ChatGPT to reply with
+
+```
+NEED: package.json, extension/manifest.json
+```
+
+When it does, pi reads those paths **inside the current workspace only** (≤8 paths, 64 KB
+budget, `node_modules`/`.git` skipped), sends them back on the same conversation, and only the
+real answer gets imported. Up to 2 rounds per consultation, advisor thread only (temporary
+chats can't be continued). `NEED: .` asks for the file tree. If it requests something outside
+the workspace, it gets refused in-band.
+
 ## Disable / remove
 
 - Disable the extension in the browser (the host exits with its port).
-- `node install.js --remove` unregisters the packed extension;
+- `node install.js --remove` drops the registry entries;
   `node native-host\regcheck.js --remove` drops the native-host entries.
-- Remove the pi extension entry.
-- Registry entries become inert; delete them if you want:
-  `HKCU\Software\Chromium\NativeMessagingHosts\com.flex.pichatgptprobe` (and the
-  `Google\Chrome` / Helium variants).
+- Remove the repo from pi's `packages`. Registry entries are inert without the extension.
 
 ## Local data & retention
 
@@ -95,15 +124,15 @@ plaintext, **don't put secrets in `/chatgpt` questions**.
 
 ## Privacy
 
-`spool/` (gitignored) contains your questions and answers in plain text, plus a host log of
-bridge messages. Nothing leaves your machine except the questions you explicitly send to
-chatgpt.com through your normal logged-in browser session. Pi's context is never sent — only
-the text you type after `/chatgpt`.
+Nothing leaves your machine except what you explicitly send: the text after `/chatgpt`
+(plus the transcript slice you approve for `handoff`, and any files ChatGPT asked for via
+`NEED:` — workspace-bounded). Pi's context is never sent wholesale.
 
 Driving the web UI is automated use of ChatGPT; that's your account risk to own.
 
-## Status
+## Development
 
-M0–M5 done (probes, send/extract, full bridge + import, temporary chat, side discussions,
-hardening) + real install without developer mode (`install.js`). See `PLAN.md` and
-`spike/NOTES.md`.
+- Self-checks: `node --experimental-strip-types test/handoff.test.mjs`
+- After editing `extension/`, re-run `node install.js` and reload the unpacked extension.
+- Architecture history and the why of every decision: `PLAN.md`, `RESEARCH.md`,
+  `spike/NOTES.md`.

@@ -85,14 +85,13 @@ export function recentTranscript(ctx: any): string {
     }
     const msg = e.message ?? e;
     if (msg.role !== "user" && msg.role !== "assistant") continue;
-    const text = Array.isArray(msg.content)
-      ? msg.content
-          .filter((c: any) => c.type === "text")
-          .map((c: any) => c.text)
-          .join("\n")
-      : typeof msg.content === "string"
-        ? msg.content
-        : "";
+    let text = "";
+    if (Array.isArray(msg.content))
+      text = msg.content
+        .filter((c: any) => c.type === "text")
+        .map((c: any) => c.text)
+        .join("\n");
+    else if (typeof msg.content === "string") text = msg.content;
     if (!text.trim()) continue;
     parts.unshift(`${msg.role}: ${text.trim()}`);
     size += text.length;
@@ -101,7 +100,10 @@ export function recentTranscript(ctx: any): string {
 }
 
 // "handoff [focus]: question" | "handoff question" -> a self-summarizing prompt
-export async function buildHandoff(ctx: any, rest: string): Promise<string | null> {
+export async function buildHandoff(
+  ctx: any,
+  rest: string,
+): Promise<{ q: string; label: string } | null> {
   const colon = rest.indexOf(":");
   const focus = colon === -1 ? "" : rest.slice(0, colon).trim();
   const question = (colon === -1 ? rest : rest.slice(colon + 1)).trim();
@@ -115,25 +117,28 @@ export async function buildHandoff(ctx: any, rest: string): Promise<string | nul
       "no session transcript on disk yet — sending the question alone",
       "info",
     );
-    return question;
+    return { q: question, label: question };
   }
   const ok = await ctx.ui.confirm(
     "Send session context?",
     `${transcript.length} chars of recent transcript will be sent to ChatGPT.`,
   );
   if (!ok) return null;
-  return [
-    "Context — recent transcript of my coding session (truncated, newest last):",
-    "<<<",
-    transcript,
-    ">>>",
-    "",
-    focus
-      ? `First summarize what matters about: ${focus}.`
-      : "First summarize where we are in 3-6 bullets.",
-    "Then answer:",
-    question,
-  ].join("\n");
+  return {
+    q: [
+      "Context — recent transcript of my coding session (truncated, newest last):",
+      "<<<",
+      transcript,
+      ">>>",
+      "",
+      focus
+        ? `First summarize what matters about: ${focus}.`
+        : "First summarize where we are in 3-6 bullets.",
+      "Then answer:",
+      question,
+    ].join("\n"),
+    label: question,
+  };
 }
 
 function readJson(file: string): any {
@@ -155,7 +160,12 @@ function bridgeStatus(): { up: boolean; age: number | null; detail: string } {
 }
 
 const clean = (s: string) =>
-  s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+  [...s]
+    .filter((c) => {
+      const cp = c.codePointAt(0)!;
+      return (cp >= 32 || cp === 9 || cp === 10 || cp === 13) && cp !== 127;
+    })
+    .join("");
 
 function importConsultation(
   pi: ExtensionAPI,
@@ -171,7 +181,7 @@ function importConsultation(
   const body = [
     labels[op.mode] || "ChatGPT web consultation (advisor thread)",
     "",
-    `Q: ${clean(op.question)}`,
+    `Q: ${clean(op.label || op.question)}`,
     "",
     "A:",
     clean(answer),
@@ -224,6 +234,7 @@ async function runAsk(
     | "side-close"
     | "side-new",
   depth = 0,
+  importAs?: string,
 ) {
   const st = bridgeStatus();
   if (!st.up) {
@@ -239,6 +250,7 @@ async function runAsk(
     question,
     mode,
     status: "submitted",
+    label: importAs,
   };
   appendOp(op);
   const wire =
@@ -290,6 +302,7 @@ async function runAsk(
               `Files you requested:\n\n${readRequested(need)}`,
               "advisor",
               depth + 1,
+              importAs ?? question,
             );
           }
           markOp(op.id, {
@@ -352,6 +365,7 @@ function recover(pi: ExtensionAPI, ctx: any) {
       id,
       ts: r.ts,
       question: r.msg.question || "(unknown)",
+      label: existing?.label,
       mode,
       status: "imported",
       url: r.msg.url,
@@ -379,8 +393,8 @@ export default function (pi: ExtensionAPI) {
       if (a === "recover") return recover(pi, ctx);
       if (!a) return showStatus(ctx);
       if (/^handoff\b/i.test(a)) {
-        const q = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim());
-        return q ? runAsk(pi, ctx, q, "advisor") : undefined;
+        const h = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim());
+        return h ? runAsk(pi, ctx, h.q, "advisor", 0, h.label) : undefined;
       }
       return runAsk(pi, ctx, a, "advisor");
     },
@@ -394,8 +408,8 @@ export default function (pi: ExtensionAPI) {
       if (a === "recover") return recover(pi, ctx);
       if (!a) return showStatus(ctx);
       if (/^handoff\b/i.test(a)) {
-        const q = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim());
-        return q ? runAsk(pi, ctx, q, "temp") : undefined;
+        const h = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim());
+        return h ? runAsk(pi, ctx, h.q, "temp", 0, h.label) : undefined;
       }
       return runAsk(pi, ctx, a, "temp");
     },
@@ -415,11 +429,13 @@ export default function (pi: ExtensionAPI) {
       const rest = sp === -1 ? "" : a.slice(sp + 1).trim();
       if (sub === "start") {
         if (/^handoff\b/i.test(rest)) {
-          const q = await buildHandoff(
+          const h = await buildHandoff(
             ctx,
             rest.replace(/^handoff\b/i, "").trim(),
           );
-          return q ? runAsk(pi, ctx, q, "side-start") : undefined;
+          return h
+            ? runAsk(pi, ctx, h.q, "side-start", 0, h.label)
+            : undefined;
         }
         return runAsk(pi, ctx, rest, "side-start");
       }

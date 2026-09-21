@@ -19,6 +19,7 @@ export interface Op {
         url?: string;
         error?: string;
         answerChars?: number;
+        label?: string;
 }
 
 function readOps(): Op[] {
