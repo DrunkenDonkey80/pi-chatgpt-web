@@ -164,3 +164,28 @@ content: ask flow + DOM→markdown walker), `index.ts` (`/chatgpt` ask/status/re
   (fresh tab + temp chat is slower than advisor reuse at ~13 s), tab auto-closed.
 
 **M3 exit criteria met.** Next: M4 (side-chat mode) / M5 (docs) per PLAN.md.
+
+## Milestone 4 — `/sidegpt` side discussions: PASS (2026-09-21)
+
+Decision (per PLAN §7/§12): **browser tab**, not a pi panel — the user continues the discussion by
+hand in the dedicated tab; pi only opens it and imports what the user approves.
+
+- `/sidegpt start <q>`: opens the side tab (or resumes the stored conversation), sends the first
+  question, waits for completion, persists the conversation URL to `chrome.storage.local`, then
+  brings the tab to the front. Imports nothing.
+- `/sidegpt summary [focus]`: sends the summary instruction as a real web message, imports the
+  summary (label "side discussion (summary)").
+- `/sidegpt last`: extract-only — no send; waits out a running generation (stop-button poll),
+  grabs last user turn + last assistant answer, imports as "last exchange".
+- `/sidegpt close`: closes the tab, keeps the URL binding (close-and-resume).
+- `/sidegpt new`: closes and clears the binding (fresh discussion next start).
+- Side ops share the one-in-flight guard; side results carry `mode` so recovery labels correctly.
+
+Verified via spool, all in conversation `6ab186fe…`: start → names brainstorm → summary (bullet
+points, real web message) → last (Q = summary prompt, A = summary) → close → resume (start
+reopened the same conversation and ChatGPT recalled the earlier discussion).
+
+Deferred: preview/edit-before-import (import is immediate and fully visible in the imported
+block; add a confirm step only if real usage wants one).
+
+**M4 exit criteria met.** Next: M5 (hardening + README) per PLAN.md.

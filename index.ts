@@ -43,10 +43,13 @@ function importConsultation(
   answer: string,
   url?: string,
 ) {
+  const labels: Record<string, string> = {
+    temp: "ChatGPT web consultation (temporary chat)",
+    "side-summary": "ChatGPT web side discussion (summary)",
+    "side-last": "ChatGPT web side discussion (last exchange)",
+  };
   const body = [
-    op.mode === "temp"
-      ? "ChatGPT web consultation (temporary chat)"
-      : "ChatGPT web consultation (advisor thread)",
+    labels[op.mode] || "ChatGPT web consultation (advisor thread)",
     "",
     `Q: ${clean(op.question)}`,
     "",
@@ -92,7 +95,14 @@ async function runAsk(
   pi: ExtensionAPI,
   ctx: any,
   question: string,
-  mode: "advisor" | "temp",
+  mode:
+    | "advisor"
+    | "temp"
+    | "side-start"
+    | "side-summary"
+    | "side-last"
+    | "side-close"
+    | "side-new",
 ) {
   const st = bridgeStatus();
   if (!st.up) {
@@ -124,13 +134,30 @@ async function runAsk(
       fs.rmSync(resultFile, { force: true });
       const m = r.msg;
       if (m.ok) {
-        markOp(op.id, {
-          status: "imported",
-          url: m.url,
-          answerChars: (m.answer || "").length,
-        });
-        importConsultation(pi, op, m.answer, m.url);
-        ctx.ui.notify(`imported ChatGPT answer (${m.url})`, "info");
+        if (!op.question && m.question) op.question = m.question;
+        if (op.mode === "side-start") {
+          markOp(op.id, { status: "side-open", url: m.url });
+          ctx.ui.notify(
+            "side discussion open — the tab is in front; continue the discussion there. /sidegpt summary | last | close when done",
+            "info",
+          );
+        } else if (op.mode === "side-close" || op.mode === "side-new") {
+          markOp(op.id, { status: "closed" });
+          ctx.ui.notify(
+            op.mode === "side-close"
+              ? "side tab closed — /sidegpt start resumes the same conversation"
+              : "side binding reset — the next start opens a fresh discussion",
+            "info",
+          );
+        } else {
+          markOp(op.id, {
+            status: "imported",
+            url: m.url,
+            answerChars: (m.answer || "").length,
+          });
+          importConsultation(pi, op, m.answer, m.url);
+          ctx.ui.notify(`imported ChatGPT answer (${m.url})`, "info");
+        }
       } else {
         markOp(op.id, { status: "failed", error: m.error });
         ctx.ui.notify(`ChatGPT consultation failed: ${m.error}`, "error");
@@ -164,7 +191,7 @@ function recover(pi: ExtensionAPI, ctx: any) {
       id,
       ts: r.ts,
       question: r.msg.question || "(unknown)",
-      mode: "advisor",
+      mode: r.msg.mode || "advisor",
       status: "imported",
       url: r.msg.url,
     };
@@ -201,6 +228,36 @@ export default function (pi: ExtensionAPI) {
       if (a === "recover") return recover(pi, ctx);
       if (!a) return showStatus(ctx);
       return runAsk(pi, ctx, a, "temp");
+    },
+  });
+
+  const SUMMARY_PROMPT =
+    "Summarize the whole discussion above as concise bullet points: key decisions, recommendations, and open questions. Skip pleasantries.";
+
+  pi.registerCommand("sidegpt", {
+    description:
+      "/sidegpt start <q> | summary [focus] | last | close | new — extended side discussion in a browser tab; only summary/last-exchange are imported",
+    handler: async (args: string, ctx: any) => {
+      const a = (args || "").trim();
+      if (!a) return showStatus(ctx);
+      const sp = a.indexOf(" ");
+      const sub = sp === -1 ? a : a.slice(0, sp);
+      const rest = sp === -1 ? "" : a.slice(sp + 1).trim();
+      if (sub === "start") return runAsk(pi, ctx, rest, "side-start");
+      if (sub === "summary")
+        return runAsk(
+          pi,
+          ctx,
+          SUMMARY_PROMPT + (rest ? ` Focus on: ${rest}` : ""),
+          "side-summary",
+        );
+      if (sub === "last") return runAsk(pi, ctx, "", "side-last");
+      if (sub === "close") return runAsk(pi, ctx, "", "side-close");
+      if (sub === "new") return runAsk(pi, ctx, "", "side-new");
+      ctx.ui.notify(
+        `unknown subcommand "${sub}" — use start | summary | last | close | new`,
+        "error",
+      );
     },
   });
 }

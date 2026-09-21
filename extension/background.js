@@ -96,6 +96,10 @@ async function handleCommand(cmd) {
       }
       return;
     }
+    if (cmd.mode && cmd.mode.startsWith("side-")) {
+      await sideCommand(cmd);
+      return;
+    }
     const tab = await getAdvisorTab();
     const res = await withTimeout(
       chrome.tabs.sendMessage(tab.id, {
@@ -161,4 +165,64 @@ async function waitForContent(tabId, timeoutMs) {
       await sleep(500);
     }
   }
+}
+
+// --- side discussion (M4) ---
+// Dedicated tab bound like the advisor tab; conversation URL persisted for
+// close-and-resume. The user continues the discussion in the tab by hand;
+// pi imports only what the user approves (summary / last exchange).
+async function getSideTab(mustExist) {
+  const { sideTabId, sideUrl } = await chrome.storage.local.get([
+    "sideTabId",
+    "sideUrl",
+  ]);
+  if (sideTabId) {
+    try {
+      const tab = await chrome.tabs.get(sideTabId);
+      if (tab.url && tab.url.startsWith("https://chatgpt.com/")) {
+        await waitForContent(tab.id, 0);
+        return tab;
+      }
+    } catch {}
+  }
+  if (mustExist && !sideUrl)
+    throw new Error("no side discussion open — start one with /sidegpt start");
+  const tab = await chrome.tabs.create({
+    url: sideUrl || "https://chatgpt.com/",
+    active: false,
+  });
+  await waitForContent(tab.id, 30000);
+  await chrome.storage.local.set({ sideTabId: tab.id });
+  return tab;
+}
+
+async function sideCommand(cmd) {
+  if (cmd.mode === "side-close" || cmd.mode === "side-new") {
+    const { sideTabId } = await chrome.storage.local.get("sideTabId");
+    if (sideTabId) {
+      try {
+        await chrome.tabs.remove(sideTabId);
+      } catch {}
+    }
+    await chrome.storage.local.remove(
+      cmd.mode === "side-new" ? ["sideTabId", "sideUrl"] : "sideTabId",
+    );
+    sendResult({ id: cmd.id, ok: true, mode: cmd.mode });
+    return;
+  }
+  const tab = await getSideTab(cmd.mode !== "side-start");
+  const res = await withTimeout(
+    chrome.tabs.sendMessage(tab.id, {
+      type: "ask",
+      id: cmd.id,
+      question: cmd.question,
+      mode: cmd.mode,
+    }),
+    ASK_TIMEOUT_MS,
+    "side discussion did not finish in time",
+  );
+  if (res.url) await chrome.storage.local.set({ sideUrl: res.url });
+  if (cmd.mode === "side-start")
+    await chrome.tabs.update(tab.id, { active: true }); // hand over to the user
+  sendResult({ id: cmd.id, ...res, mode: cmd.mode });
 }

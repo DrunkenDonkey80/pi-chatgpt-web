@@ -42,6 +42,31 @@
   async function ask(_id, question, mode) {
     try {
       const q = question;
+      if (mode === "side-last") {
+        // extract-only: no send, no composer needed. Wait out any running
+        // generation first so we never grab a half-streamed answer.
+        const stopSel = 'button[data-testid="stop-button"]';
+        let st = Date.now();
+        while (document.querySelector(stopSel) && Date.now() - st < 300000)
+          await sleep(500);
+        const users = document.querySelectorAll(
+          '[data-message-author-role="user"]',
+        );
+        const asst = document.querySelectorAll(
+          '[data-message-author-role="assistant"]',
+        );
+        const u = users[users.length - 1];
+        const a = asst[asst.length - 1];
+        if (!a)
+          throw new Error("no assistant message in the side discussion yet");
+        status("extracted last exchange");
+        return {
+          ok: true,
+          url: location.href,
+          question: u ? (u.innerText || "").trim() : "(no user turn found)",
+          answer: domToMarkdown(a),
+        };
+      }
       const prevCount = turns();
       // the composer mounts after React hydrates — poll for it (fresh tabs hit
       // this every time; readyState=interactive has only a fallback textarea)

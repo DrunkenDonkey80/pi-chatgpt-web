@@ -7,7 +7,12 @@ daily browser's logged-in session — no API key, no second browser, no debug po
 /chatgpt <question>   ask the persistent advisor thread, import question + answer
 /chatgpt              bridge status + pending operations
 /chatgpt recover      import captured-but-unimported answers
-/tempgct <question>   ask via a real Temporary Chat (not saved to your history)
+/tempgpt <question>   ask via a real Temporary Chat (not saved to your history)
+/tempgpt              bridge status + pending operations
+/sidegpt start <q>    open (or resume) a side discussion tab — continue it in the browser
+/sidegpt summary      import a ChatGPT-generated summary of the side discussion
+/sidegpt last         import just the last exchange from the side discussion
+/sidegpt close|new    close the tab (resumable) | reset the binding entirely
 ```
 
 The imported consultation lands in the pi session as a custom message — visible to the model on
@@ -77,5 +82,6 @@ Driving the web UI is automated use of ChatGPT; that's your account risk to own.
 
 ## Status
 
-M0–M3 done (probes, in-page send/extract, full bridge + import, real temporary chat). M4
-(side-chat mode) pending. See `PLAN.md` and `spike/NOTES.md`.
+M0–M4 done (probes, in-page send/extract, full bridge + import, real temporary chat, side
+discussions with approved-summary import). M5 (hardening) pending. See `PLAN.md` and
+`spike/NOTES.md`.
