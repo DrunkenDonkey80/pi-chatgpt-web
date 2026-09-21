@@ -152,3 +152,15 @@ content: ask flow + DOM→markdown walker), `index.ts` (`/chatgpt` ask/status/re
   remain until closed manually.
 
 **M2 exit criteria met** (interactive acceptance by user pending). Next: M3 (`/tempgpt`).
+
+## Milestone 3 — `/tempgct` real temporary chat: PASS (2026-09-21)
+
+- background: `mode:"temp"` → fresh `?temporary-chat=true` tab per question (never touches the
+  advisor tab), closed in a `finally` after the result is spooled — error or success both close it.
+- content: temp guard — after the composer wait, refuses to send unless the page shows the
+  "Temporary chat" indicator; no normal-chat fallback.
+- index: `/tempgpt` shares `runAsk(mode)`; imported block labelled "(temporary chat)".
+- Verified via spool: question → answer `TEMP OK` at the temporary-chat URL, ~46 s end to end
+  (fresh tab + temp chat is slower than advisor reuse at ~13 s), tab auto-closed.
+
+**M3 exit criteria met.** Next: M4 (side-chat mode) / M5 (docs) per PLAN.md.

@@ -70,14 +70,39 @@ async function handleCommand(cmd) {
   }
   busyId = cmd.id;
   try {
-    if (cmd.mode === "temp")
-      throw new Error("temporary-chat mode arrives in M3");
+    if (cmd.mode === "temp") {
+      // fresh temporary-chat tab per question; closed after the result is spooled
+      const tab = await chrome.tabs.create({
+        url: "https://chatgpt.com/?temporary-chat=true",
+        active: false,
+      });
+      try {
+        await waitForContent(tab.id, 30000);
+        const res = await withTimeout(
+          chrome.tabs.sendMessage(tab.id, {
+            type: "ask",
+            id: cmd.id,
+            question: cmd.question,
+            mode: "temp",
+          }),
+          ASK_TIMEOUT_MS,
+          "temporary chat did not finish in time",
+        );
+        sendResult({ id: cmd.id, ...res });
+      } finally {
+        try {
+          await chrome.tabs.remove(tab.id);
+        } catch {}
+      }
+      return;
+    }
     const tab = await getAdvisorTab();
     const res = await withTimeout(
       chrome.tabs.sendMessage(tab.id, {
         type: "ask",
         id: cmd.id,
         question: cmd.question,
+        mode: "advisor",
       }),
       ASK_TIMEOUT_MS,
       "chatgpt tab did not finish in time",

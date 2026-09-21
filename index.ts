@@ -44,7 +44,9 @@ function importConsultation(
   url?: string,
 ) {
   const body = [
-    "ChatGPT web consultation (advisor thread)",
+    op.mode === "temp"
+      ? "ChatGPT web consultation (temporary chat)"
+      : "ChatGPT web consultation (advisor thread)",
     "",
     `Q: ${clean(op.question)}`,
     "",
@@ -86,7 +88,12 @@ function showStatus(ctx: any) {
   ctx.ui.notify(lines.filter(Boolean).join("\n"), "info");
 }
 
-async function runAsk(pi: ExtensionAPI, ctx: any, question: string) {
+async function runAsk(
+  pi: ExtensionAPI,
+  ctx: any,
+  question: string,
+  mode: "advisor" | "temp",
+) {
   const st = bridgeStatus();
   if (!st.up) {
     ctx.ui.notify(
@@ -99,7 +106,7 @@ async function runAsk(pi: ExtensionAPI, ctx: any, question: string) {
     id: randomUUID(),
     ts: Date.now(),
     question,
-    mode: "advisor",
+    mode,
     status: "submitted",
   };
   appendOp(op);
@@ -182,7 +189,18 @@ export default function (pi: ExtensionAPI) {
       const a = (args || "").trim();
       if (a === "recover") return recover(pi, ctx);
       if (!a) return showStatus(ctx);
-      return runAsk(pi, ctx, a);
+      return runAsk(pi, ctx, a, "advisor");
+    },
+  });
+
+  pi.registerCommand("tempgpt", {
+    description:
+      "/tempgpt <question> — ask via a real Temporary Chat and import Q+A (never touches the advisor thread)",
+    handler: async (args: string, ctx: any) => {
+      const a = (args || "").trim();
+      if (a === "recover") return recover(pi, ctx);
+      if (!a) return showStatus(ctx);
+      return runAsk(pi, ctx, a, "temp");
     },
   });
 }

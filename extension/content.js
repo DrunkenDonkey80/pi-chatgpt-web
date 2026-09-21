@@ -27,7 +27,7 @@
       return;
     }
     if (msg && msg.type === "ask") {
-      ask(msg.id, msg.question)
+      ask(msg.id, msg.question, msg.mode)
         .then(sendResponse)
         .catch((e) =>
           sendResponse({
@@ -39,7 +39,7 @@
     }
   });
 
-  async function ask(_id, question) {
+  async function ask(_id, question, mode) {
     try {
       const q = question;
       const prevCount = turns();
@@ -66,6 +66,14 @@
         throw new Error(
           `composer #prompt-textarea not found after 15s; readyState=${document.readyState}; candidates: ${cands || "NONE"}`,
         );
+      }
+      if (mode === "temp") {
+        // refuse to send anywhere that is not a verified temporary chat
+        await sleep(500);
+        if (!document.body.innerText.includes("Temporary chat"))
+          throw new Error(
+            "temporary-chat indicator not found — refusing to send to a normal chat",
+          );
       }
       status("filling composer…");
       composer.focus();
