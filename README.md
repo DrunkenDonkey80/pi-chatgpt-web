@@ -35,21 +35,24 @@ exactly one pinned extension ID.
 
 ## Setup (once)
 
-1. **Extension** — Helium/Chrome: `chrome://extensions` → Developer mode → *Load unpacked* →
-   this repo's `extension/` folder. Note the assigned extension ID.
-2. **Host manifest** — put that ID into `native-host/com.flex.pichatgptprobe.json`
-   (`allowed_origins`).
-3. **Registry** — `node native-host\regcheck.js` (writes HKCU entries pointing at the host
+1. **Extension + host pin** — `node install.js`. Packs `extension/` into a signed
+   `extension.crx`, registers it as an external extension (no developer mode, no web store),
+   and pins the native host manifest to the resulting stable extension ID. Then fully quit
+   Helium (tray icon too) and relaunch — it appears in `chrome://extensions` as a normal
+   install. Remove any old unpacked copy.
+2. **Host registry** — `node native-host\regcheck.js` (writes HKCU entries pointing at the host
    manifest; safe to re-run).
-4. **pi extension** — `pi install <path-to-this-repo>` or add the path to
+3. **pi extension** — `pi install <path-to-this-repo>` or add the path to
    `~/.pi/agent/settings.json`:
 
    ```json
    "extensions": ["C:\\path\\to\\pi-chatgpt-web"]
    ```
 
-Keep the browser running while consulting. Unpacked extension IDs derive from the folder's
-absolute path — if you move `extension/`, re-do steps 1–3.
+The signing key (`extension.pem`) is committed, so the extension ID is **stable forever** —
+moving the folder or repacking keeps it. After editing `extension/`, re-run `node install.js`
+and restart the browser. Fallback: developer mode + *Load unpacked* still works, but the ID
+then depends on the folder's absolute path.
 
 ## Use
 
@@ -66,6 +69,8 @@ session (e.g. pi quit mid-consultation).
 ## Disable / remove
 
 - Disable the extension in the browser (the host exits with its port).
+- `node install.js --remove` unregisters the packed extension;
+  `node native-host\regcheck.js --remove` drops the native-host entries.
 - Remove the pi extension entry.
 - Registry entries become inert; delete them if you want:
   `HKCU\Software\Chromium\NativeMessagingHosts\com.flex.pichatgptprobe` (and the
@@ -99,6 +104,6 @@ Driving the web UI is automated use of ChatGPT; that's your account risk to own.
 
 ## Status
 
-M0–M4 done (probes, in-page send/extract, full bridge + import, real temporary chat, side
-discussions with approved-summary import). M5 (hardening) pending. See `PLAN.md` and
+M0–M5 done (probes, send/extract, full bridge + import, temporary chat, side discussions,
+hardening) + real install without developer mode (`install.js`). See `PLAN.md` and
 `spike/NOTES.md`.

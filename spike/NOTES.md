@@ -215,3 +215,20 @@ how to purge). Deferred/manual: live disable/reload toggle test (user, one toggl
    live behavior (code-reviewed), host.log rotation (none — delete anytime, documented).
 
 **M5 exit criteria met. M0–M5 complete.**
+
+## Post-M5 — real install, no developer mode (2026-09-21)
+
+Unpacked extensions force developer mode forever; the web store is out of scope (private).
+Used the documented Windows sideload instead: `install.js` packs `extension/` into a
+self-signed CRX3 (headless `chrome --pack-extension` — proven to exit 0, no dialog) with a
+committed key, so the extension ID is **stable** (no longer folder-path-derived), registers
+it as an external extension under `HKCU\<root>\Extensions\<id>` (Chromium / Google\Chrome /
+Helium roots, `path` + `version` values), and re-pins the native host manifest to the ID.
+
+- Key: `extension.pem` (committed; private repo). Build artifact `extension.crx` gitignored.
+- `node install.js --remove` unregisters; re-run `node install.js` after any manifest change.
+- Packed extension ID: `jlnbjgehaidkajobnhkmchjknjnalj` (v0.1.0). Old unpacked copy must be
+  removed once (different ID, no longer in `allowed_origins`).
+
+Pending live proof: Helium relaunch → extension present without developer mode → `/chatgpt`
+works.
