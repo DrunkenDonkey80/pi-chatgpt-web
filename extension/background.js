@@ -11,6 +11,23 @@ let busyId = null; // id of the in-flight operation
 const results = new Map(); // id -> result, kept until the host acks
 const seen = new Set(); // processed command ids (idempotent redelivery)
 
+// MV3 keepalive: a long silent generation gives the service worker nothing
+// to do, so Chrome kills it mid-ask — the pending promise, the results map
+// and the port all die, and the answer is lost. Any extension API call
+// resets the idle timer; ping every 25s while an ask is in flight.
+let keepalive = null;
+function startKeepalive() {
+  if (!keepalive)
+    keepalive = setInterval(
+      () => chrome.runtime.getPlatformInfo(() => {}),
+      25000,
+    );
+}
+function stopKeepalive() {
+  clearInterval(keepalive);
+  keepalive = null;
+}
+
 function connect() {
   port = chrome.runtime.connectNative(HOST);
   port.onMessage.addListener(onPortMessage);
@@ -24,9 +41,12 @@ function connect() {
 connect();
 
 function post(msg) {
+  if (!port) connect(); // port dropped while we were idle — reconnect
   try {
     if (port) port.postMessage(msg);
-  } catch {}
+  } catch {
+    port = null; // zombie port: reconnect on the next post / onDisconnect
+  }
 }
 
 function onPortMessage(msg) {
@@ -69,6 +89,7 @@ async function handleCommand(cmd) {
     return;
   }
   busyId = cmd.id;
+  startKeepalive();
   try {
     if (cmd.mode === "temp") {
       // fresh temporary-chat tab per question; closed after the result is spooled
@@ -134,6 +155,7 @@ async function handleCommand(cmd) {
     });
   } finally {
     busyId = null;
+    stopKeepalive();
   }
 }
 

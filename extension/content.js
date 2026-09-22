@@ -49,7 +49,7 @@
         // extract-only: no send, no composer needed. Wait out any running
         // generation first so we never grab a half-streamed answer.
         const stopSel = 'button[data-testid="stop-button"]';
-        let st = Date.now();
+        const st = Date.now();
         while (document.querySelector(stopSel) && Date.now() - st < 300000)
           await sleep(500);
         const users = document.querySelectorAll(
@@ -172,8 +172,7 @@
           '[data-message-author-role="user"]',
         );
         userTurn = users.length ? users[users.length - 1] : null;
-        const okTurn =
-          userTurn && norm(userTurn.innerText).startsWith(qPrefix);
+        const okTurn = userTurn && norm(userTurn.innerText).startsWith(qPrefix);
         if (okTurn && !(composer.textContent || "").trim()) break;
         if (!enterRetryTried && Date.now() - t0 > 8000) {
           enterRetryTried = true;
