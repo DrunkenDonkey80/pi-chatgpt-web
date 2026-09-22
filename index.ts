@@ -13,7 +13,7 @@ import { appendOp, pendingOps, markOp, findOp, type Op } from "./state.ts";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SPOOL = path.join(ROOT, "spool");
-const RESULT_TIMEOUT_MS = 8 * 60 * 1000;
+const RESULT_TIMEOUT_MS = 21 * 60 * 1000; // thinking models: 180s start + 900s generation + settle
 const HEARTBEAT_STALE_MS = 15_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

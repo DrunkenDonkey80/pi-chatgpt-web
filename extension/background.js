@@ -2,7 +2,7 @@
 // one-in-flight guard. Commands arrive over the port (relayed from the spool
 // by the native host); results go back the same way.
 const HOST = "com.flex.pichatgptprobe";
-const ASK_TIMEOUT_MS = 8 * 60 * 1000; // thinking models can take a while
+const ASK_TIMEOUT_MS = 21 * 60 * 1000; // content waits 180s start + 900s generation + 90s settle
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

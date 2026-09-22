@@ -186,16 +186,20 @@
         );
 
       status("waiting for the answer…");
+      // Thinking models can reason for 5+ minutes before any assistant DOM
+      // node exists — the stop button is the reliable "generation started"
+      // signal, so accept either it or the new turn appearing.
       const stopSel = 'button[data-testid="stop-button"]';
+      const started = () =>
+        turns() > prevCount || !!document.querySelector(stopSel);
       t0 = Date.now();
-      while (turns() <= prevCount && Date.now() - t0 < 120000) await sleep(500);
-      if (turns() <= prevCount)
-        throw new Error("our assistant turn never appeared within 120s");
+      while (!started() && Date.now() - t0 < 180000) await sleep(500);
+      if (!started())
+        throw new Error(
+          "no assistant turn started within 180s — question rejected or ChatGPT stuck?",
+        );
       t0 = Date.now();
-      while (!document.querySelector(stopSel) && Date.now() - t0 < 15000)
-        await sleep(250);
-      t0 = Date.now();
-      while (document.querySelector(stopSel) && Date.now() - t0 < 300000)
+      while (document.querySelector(stopSel) && Date.now() - t0 < 900000)
         await sleep(500);
 
       status("checking stability…");
