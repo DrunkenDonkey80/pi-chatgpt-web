@@ -28,7 +28,7 @@ interface Cfg {
   handoffMaxChars: number; // transcript budget for handoff, default 6000
   summaryModel: string; // "" = current session model
   summaryEffort: string; // "" = model default; else minimal|low|medium|high|xhigh
-  advisorSentUpTo: { id: string; ts: number } | null; // what was already sent
+  advisors: Record<string, { sentUpTo?: { id: string; ts: number } } | undefined>; // per-project advisor state, keyed by workspace dir
 }
 const SETTINGS =
   process.env.PI_CHATGPT_SETTINGS || path.join(SPOOL, "settings.json");
@@ -36,11 +36,14 @@ const CFG_DEFAULTS: Cfg = {
   handoffMaxChars: 6000,
   summaryModel: "",
   summaryEffort: "minimal",
-  advisorSentUpTo: null,
+  advisors: {},
 };
 
 function loadCfg(): Cfg {
-  return { ...CFG_DEFAULTS, ...(readJson(SETTINGS) ?? {}) } as Cfg;
+  const c = { ...CFG_DEFAULTS, ...(readJson(SETTINGS) ?? {}) } as Cfg;
+  delete (c as any).advisorSentUpTo; // legacy global cursor — meaningless per-project
+  c.advisors ??= {};
+  return c;
 }
 
 function saveCfg(c: Cfg) {
@@ -265,7 +268,9 @@ export async function buildHandoff(
   const cfg = loadCfg();
   const file = ctx?.sessionManager?.getSessionFile?.();
   const isAdvisor = (opts.mode ?? "advisor") === "advisor";
-  const cursor = isAdvisor ? cfg.advisorSentUpTo : null;
+  const cursor = isAdvisor
+    ? (cfg.advisors[process.cwd()]?.sentUpTo ?? null)
+    : null;
   const parsed =
     file && fs.existsSync(file)
       ? transcriptPairs(file, cursor)
@@ -474,6 +479,16 @@ function showStatus(ctx: any) {
     lines.push(
       "run /chatgpt recover to import captured-but-unimported answers",
     );
+  const threads = Object.entries(loadCfg().advisors ?? {});
+  if (threads.length)
+    lines.push(
+      `advisor threads: ${threads
+        .map(
+          ([ws]) =>
+            path.basename(ws) + (ws === process.cwd() ? " (this)" : ""),
+        )
+        .join(", ")}`,
+    );
   ctx.ui.notify(lines.filter(Boolean).join("\n"), "info");
 }
 
@@ -518,13 +533,23 @@ async function runAsk(
       : question;
   fs.writeFileSync(
     path.join(SPOOL, `command-${op.id}.json`),
-    JSON.stringify({ id: op.id, type: "ask", mode: op.mode, question: wire }),
+    JSON.stringify({
+      id: op.id,
+      type: "ask",
+      mode: op.mode,
+      question: wire,
+      workspace: process.cwd(),
+    }),
   );
   // advisor handoff cursor: ChatGPT now has everything up to here — later
   // handoffs send only the delta
   if (opts?.sentUpTo && mode === "advisor") {
     const c = loadCfg();
-    c.advisorSentUpTo = opts.sentUpTo;
+    const ws = process.cwd();
+    c.advisors = {
+      ...c.advisors,
+      [ws]: { ...c.advisors[ws], sentUpTo: opts.sentUpTo },
+    };
     saveCfg(c);
   }
   ctx.ui.notify("sent to ChatGPT — waiting for the answer…", "info");
@@ -720,9 +745,9 @@ async function setupMenu(ctx: any) {
           "The next advisor handoff re-sends the full recent transcript.",
         )
       ) {
-        cfg.advisorSentUpTo = null;
+        delete cfg.advisors[process.cwd()];
         saveCfg(cfg);
-        ctx.ui.notify("send-cursor reset", "info");
+        ctx.ui.notify("send-cursor reset for this project", "info");
       }
     }
   }

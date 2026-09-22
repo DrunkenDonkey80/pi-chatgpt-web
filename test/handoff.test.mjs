@@ -135,10 +135,18 @@ assert.equal(
 
 const tSince = transcriptPairs(sess, { id: "e2" });
 assert.equal(tSince.pairs.length, 1, "cursor keeps only newer pairs");
-assert.equal(tSince.pairs[0].user, "second question", "delta is the newer pair");
+assert.equal(
+  tSince.pairs[0].user,
+  "second question",
+  "delta is the newer pair",
+);
 
 const tLost = transcriptPairs(sess, { id: "zz" });
-assert.equal(tLost.pairs.length, 2, "unknown cursor falls back to full transcript");
+assert.equal(
+  tLost.pairs.length,
+  2,
+  "unknown cursor falls back to full transcript",
+);
 
 const t0 = recentTranscript(mkCtx(sess));
 assert.ok(
@@ -234,13 +242,18 @@ setCfg({
   handoffMaxChars: 6000,
   summaryModel: "",
   summaryEffort: "low",
-  advisorSentUpTo: { id: "e2", ts: 0 },
+  advisors: { [process.cwd()]: { sentUpTo: { id: "e2", ts: 0 } } },
 });
 const hD = await buildHandoff(mkCtx(sess), "next?");
 assert.ok(hD.q.includes("second question"), "delta keeps only new pairs");
 assert.ok(!hD.q.includes("first question"), "old pairs not resent");
 
-setCfg({ handoffMaxChars: 6000, summaryModel: "", summaryEffort: "low", advisorSentUpTo: { id: "e5", ts: 0 } });
+setCfg({
+  handoffMaxChars: 6000,
+  summaryModel: "",
+  summaryEffort: "low",
+  advisors: { [process.cwd()]: { sentUpTo: { id: "e5", ts: 0 } } },
+});
 const nFresh = [];
 const hNone = await buildHandoff(mkCtx(sess, {}, nFresh), "again?");
 assert.equal(hNone.q, "again?", "nothing new sends bare question");
@@ -249,7 +262,12 @@ assert.ok(
   "nothing-new notified",
 );
 
-setCfg({ handoffMaxChars: 6000, summaryModel: "", summaryEffort: "low", advisorSentUpTo: { id: "zz", ts: 0 } });
+setCfg({
+  handoffMaxChars: 6000,
+  summaryModel: "",
+  summaryEffort: "low",
+  advisors: { [process.cwd()]: { sentUpTo: { id: "zz", ts: 0 } } },
+});
 const hLost = await buildHandoff(mkCtx(sess), "after compact?");
 assert.ok(
   hLost.q.includes("first question"),

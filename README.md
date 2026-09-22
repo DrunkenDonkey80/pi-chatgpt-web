@@ -94,6 +94,13 @@ The advisor thread remembers what it has already seen: after each handoff a send
 saved, so the next handoff sends only the new exchanges (a handoff with nothing new sends your
 question alone). `/chatgpt setup` can reset the cursor; temp/side handoffs never move it.
 
+Advisor threads are **per project**: each workspace folder gets its own ChatGPT conversation
+(dedicated tab), so alternating `/chatgpt` between ten open projects stays consistent per
+project. The first message of a new thread is labeled `[project: <folder>]` so ChatGPT's
+auto-title names it — rename it by hand if you like. The conversation URL is remembered, so
+closing the tab or restarting Helium resumes the same thread; `/chatgpt` status lists the
+threads it knows.
+
 ### NEED: — ChatGPT can read your files
 
 Every outgoing question carries a one-line footer inviting ChatGPT to reply with

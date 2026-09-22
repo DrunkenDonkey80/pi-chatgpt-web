@@ -100,18 +100,32 @@ async function handleCommand(cmd) {
       await sideCommand(cmd);
       return;
     }
-    const tab = await getAdvisorTab();
+    const workspace = cmd.workspace || "default";
+    const { tab, fresh } = await getAdvisorTab(workspace);
+    let question = cmd.question;
+    if (fresh) {
+      // brand-new conversation: label it so ChatGPT's auto-title (and the
+      // advisor itself) knows which project this thread is about
+      const name = workspace.split(/[\\/]/).filter(Boolean).pop() || workspace;
+      question = `[project: ${name}]\n\n${question}`;
+    }
     const res = await withTimeout(
       chrome.tabs.sendMessage(tab.id, {
         type: "ask",
         id: cmd.id,
-        question: cmd.question,
+        question,
         mode: "advisor",
       }),
       ASK_TIMEOUT_MS,
       "chatgpt tab did not finish in time",
     );
     sendResult({ id: cmd.id, ...res, mode: "advisor" });
+    // remember the conversation URL so the thread survives tab/browser restarts
+    if (res?.ok && res.url && res.url.includes("/c/")) {
+      const { advisors = {} } = await chrome.storage.local.get("advisors");
+      advisors[workspace] = { ...(advisors[workspace] || {}), url: res.url };
+      await chrome.storage.local.set({ advisors });
+    }
   } catch (e) {
     sendResult({
       id: cmd.id,
@@ -133,24 +147,29 @@ function withTimeout(p, ms, what) {
 }
 
 // --- advisor tab lifecycle ---
-async function getAdvisorTab() {
-  const { advisorTabId } = await chrome.storage.local.get("advisorTabId");
-  if (advisorTabId) {
+// One dedicated tab + conversation URL per project workspace; keyed by the
+// workspace dir pi sent with the command.
+async function getAdvisorTab(workspace) {
+  const { advisors = {} } = await chrome.storage.local.get("advisors");
+  const rec = advisors[workspace];
+  if (rec?.tabId) {
     try {
-      const tab = await chrome.tabs.get(advisorTabId);
+      const tab = await chrome.tabs.get(rec.tabId);
       if (tab.url && tab.url.startsWith("https://chatgpt.com/")) {
         await waitForContent(tab.id, 0); // already has a content script
-        return tab;
+        return { tab, fresh: false };
       }
     } catch {}
   }
+  // resume the saved conversation if there is one; else a brand-new chat
   const tab = await chrome.tabs.create({
-    url: "https://chatgpt.com/",
+    url: rec?.url || "https://chatgpt.com/",
     active: false,
   });
   await waitForContent(tab.id, 30000);
-  await chrome.storage.local.set({ advisorTabId: tab.id });
-  return tab;
+  advisors[workspace] = { ...rec, tabId: tab.id };
+  await chrome.storage.local.set({ advisors });
+  return { tab, fresh: !rec?.url };
 }
 
 async function waitForContent(tabId, timeoutMs) {
