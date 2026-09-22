@@ -122,11 +122,13 @@ Other extensions — and any agent running in this pi process — can use ChatGP
 importing anything into your session transcript:
 
 - **Tool**: `chatgpt_consult` is registered for the LLM. Any session, subagent, or ce-workflow
-  agent can call it with `{question, mode?}`. Advisor mode (default) continues this project's
-  conversation, `NEED:` file requests are answered automatically (≤2 rounds), and the final
-  answer is returned to the calling agent only.
+  agent can call it with `{question, mode?, files?}`. Advisor mode (default) continues this
+  project's conversation, `NEED:` file requests are answered automatically (≤2 rounds), and the
+  final answer is returned to the calling agent only. `files` (optional) attaches up to 3
+  workspace files (2MB total) — staged into the spool, pulled by the extension, and attached
+  for real in the composer (images, PDFs, text).
 - **Direct call**: extension code can import this module and call
-  `askChatGPT(pi, ctx, question, "advisor" | "temp")` → `{answer, url}` — same flow, no
+  `askChatGPT(pi, ctx, question, "advisor" | "temp", files?)` → `{answer, url}` — same flow, no
   transcript import.
 
 ## Disable / remove

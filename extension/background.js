@@ -28,6 +28,30 @@ function stopKeepalive() {
   keepalive = null;
 }
 
+// attachment pull: the host serves spool/attach-<id>/<name> in 512KB
+// base64 chunks; native-port messages must stay under 1MB
+const chunkWaiters = new Map(); // reqId -> resolve
+async function pullFile(id, name) {
+  const parts = [];
+  let offset = 0;
+  let size = Infinity;
+  while (offset < size) {
+    const reqId = `${id}:${name}:${offset}`;
+    const chunk = await new Promise((resolve, reject) => {
+      chunkWaiters.set(reqId, resolve);
+      setTimeout(() => {
+        if (chunkWaiters.delete(reqId)) reject(new Error("file-chunk timeout"));
+      }, 15000);
+      post({ type: "get-file", reqId, id, name, offset });
+    });
+    if (chunk.error) throw new Error(`host get-file: ${chunk.error}`);
+    parts.push(Buffer.from(chunk.data, "base64"));
+    size = chunk.size;
+    offset += parts[parts.length - 1].length;
+  }
+  return Buffer.concat(parts);
+}
+
 function connect() {
   port = chrome.runtime.connectNative(HOST);
   port.onMessage.addListener(onPortMessage);
@@ -57,6 +81,14 @@ function onPortMessage(msg) {
   }
   if (msg.type === "result-ack") {
     results.delete(msg.id);
+    return;
+  }
+  if (msg.type === "file-chunk" && msg.reqId) {
+    const w = chunkWaiters.get(msg.reqId);
+    if (w) {
+      chunkWaiters.delete(msg.reqId);
+      w(msg);
+    }
     return;
   }
   if (msg.type === "command") {
@@ -90,6 +122,16 @@ async function handleCommand(cmd) {
   }
   busyId = cmd.id;
   startKeepalive();
+  // pull staged attachments over the port before dispatching the ask
+  const attachments = [];
+  if (cmd.files?.length) {
+    for (const f of cmd.files)
+      attachments.push({
+        name: f.name,
+        type: f.type,
+        data: (await pullFile(cmd.id, f.name)).toString("base64"),
+      });
+  }
   try {
     if (cmd.mode === "temp") {
       // fresh temporary-chat tab per question; closed after the result is spooled
@@ -105,6 +147,7 @@ async function handleCommand(cmd) {
             id: cmd.id,
             question: cmd.question,
             mode: "temp",
+            attachments,
           }),
           ASK_TIMEOUT_MS,
           "temporary chat did not finish in time",
@@ -136,6 +179,7 @@ async function handleCommand(cmd) {
         id: cmd.id,
         question,
         mode: "advisor",
+        attachments,
       }),
       ASK_TIMEOUT_MS,
       "chatgpt tab did not finish in time",

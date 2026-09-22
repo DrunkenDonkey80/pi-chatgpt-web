@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // readRequested()/CFG_FILE resolve against cwd captured at module load — chdir
 // FIRST, then import (ESM hoists static imports, so this must be dynamic).
@@ -19,6 +20,7 @@ const {
   transcriptPairs,
   budgetPairs,
   buildHandoff,
+  stageAttachments,
 } = await import("../index.ts");
 
 // --- needRequest -----------------------------------------------------------
@@ -274,5 +276,40 @@ assert.ok(
   "lost cursor re-sends full transcript",
 );
 clearCfg();
+
+// --- consult attachments (stageAttachments) -----------------------------
+{
+  const SPOOL = path.resolve(fileURLToPath(import.meta.url), "..", "..", "spool");
+  const mk = (n, size) => {
+    fs.writeFileSync(path.join(tmp, n), Buffer.alloc(size, 7));
+    return n;
+  };
+  mk("a.png", 1000);
+  mk("b.txt", 2000);
+  const man = stageAttachments(["a.png", "b.txt"], "att-test-1");
+  assert.equal(man.length, 2, "manifest count");
+  assert.equal(man[0].name, "a.png");
+  assert.equal(man[0].type, "image/png");
+  assert.equal(man[1].type, "text/plain");
+  assert.ok(
+    fs.existsSync(path.join(SPOOL, "attach-att-test-1", "a.png")),
+    "staged into spool",
+  );
+  fs.rmSync(path.join(SPOOL, "attach-att-test-1"), {
+    recursive: true,
+    force: true,
+  });
+  mk("1.txt", 10);
+  mk("2.txt", 10);
+  mk("3.txt", 10);
+  mk("4.txt", 10);
+  mk("big.bin", 2 * 1024 * 1024 + 1);
+  let threw = 0;
+  try { stageAttachments(["1.txt", "2.txt", "3.txt", "4.txt"], "x"); } catch { threw++; }
+  try { stageAttachments(["big.bin"], "x"); } catch { threw++; }
+  try { stageAttachments(["../../outside.txt"], "x"); } catch { threw++; }
+  try { stageAttachments(["nope.txt"], "x"); } catch { threw++; }
+  assert.equal(threw, 4, "count/size/sandbox/missing all refused");
+}
 
 console.log("handoff + NEED self-check: all assertions passed");

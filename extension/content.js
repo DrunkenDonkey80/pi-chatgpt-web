@@ -110,6 +110,37 @@
         throw new Error(
           `composer has a draft (${draft.length} chars) — refusing to overwrite; clear it in the tab first`,
         );
+      if (msg.attachments?.length) {
+        status("attaching files…");
+        // the file input is lazy: click the paperclip once to materialize it
+        let input = null;
+        for (let i = 0; i < 20 && !input; i++) {
+          input = document.querySelector('input[type="file"]');
+          if (!input) {
+            if (i === 3)
+              document
+                .querySelector(
+                  'button[data-testid="composer-attach-button"], button[aria-label*="ttach"]',
+                )
+                ?.click();
+            await sleep(300);
+          }
+        }
+        if (!input) throw new Error("composer file input not found");
+        const dt = new DataTransfer();
+        for (const a of msg.attachments) {
+          const bytes = Uint8Array.from(atob(a.data), (c) => c.charCodeAt(0));
+          dt.items.add(
+            new File([bytes], a.name, {
+              type: a.type || "application/octet-stream",
+            }),
+          );
+        }
+        input.files = dt.files;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await sleep(1500); // upload chips must render before send enables
+      }
       status("filling composer…");
       composer.focus();
       document.execCommand("selectAll");

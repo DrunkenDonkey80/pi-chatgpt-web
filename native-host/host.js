@@ -66,6 +66,38 @@ function onMessage(msg) {
     fs.renameSync(tmp, file);
     send({ type: "result-ack", id: msg.id });
   }
+  // serve staged attachments in 512KB base64 chunks — never arbitrary paths
+  if (
+    msg.type === "get-file" &&
+    msg.id &&
+    typeof msg.name === "string" &&
+    Number.isInteger(msg.offset)
+  ) {
+    const file = path.join(
+      SPOOL,
+      `attach-${msg.id}`,
+      path.basename(msg.name),
+    );
+    try {
+      const buf = fs.readFileSync(file);
+      const slice = buf.subarray(msg.offset, msg.offset + 512 * 1024);
+      send({
+        type: "file-chunk",
+        reqId: msg.reqId,
+        id: msg.id,
+        name: msg.name,
+        offset: msg.offset,
+        size: buf.length,
+        data: slice.toString("base64"),
+      });
+    } catch (e) {
+      send({
+        type: "file-chunk",
+        reqId: msg.reqId,
+        error: String((e && e.message) || e),
+      });
+    }
+  }
 }
 
 // --- duties ---

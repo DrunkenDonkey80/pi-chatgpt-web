@@ -231,6 +231,76 @@ export function readRequested(paths: string[]): string {
   return out.join("\n\n");
 }
 
+// --- consult attachments: max 3 files, 2MB total, workspace-bounded ---------
+export const MAX_ATTACH = 3;
+export const MAX_ATTACH_TOTAL = 2 * 1024 * 1024;
+const ATTACH_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  md: "text/markdown",
+  json: "application/json",
+  csv: "text/csv",
+  ts: "text/plain",
+  js: "text/plain",
+  mjs: "text/plain",
+  css: "text/css",
+  html: "text/html",
+  py: "text/plain",
+  sh: "text/plain",
+};
+
+// validate + copy the given workspace files into spool/attach-<opId>/ and
+// return the manifest ({name, type}) the extension consumes. The host only
+// ever serves this staging dir — never arbitrary paths.
+// ponytail: stale attach dirs (>30min) are swept on the next stage, no per-op
+// cleanup; ≤2MB each so leftovers are trivial disk
+export function stageAttachments(
+  files: string[],
+  opId: string,
+): { name: string; type: string }[] {
+  if (!files.length) return [];
+  if (files.length > MAX_ATTACH)
+    throw new Error(
+      `too many attachments: ${files.length} > max ${MAX_ATTACH}`,
+    );
+  try {
+    for (const d of fs.readdirSync(SPOOL)) {
+      if (!d.startsWith("attach-")) continue;
+      const p = path.join(SPOOL, d);
+      if (Date.now() - fs.statSync(p).mtimeMs > 30 * 60_000)
+        fs.rmSync(p, { recursive: true, force: true });
+    }
+  } catch {}
+  const dir = path.join(SPOOL, `attach-${opId}`);
+  fs.mkdirSync(dir, { recursive: true });
+  const out: { name: string; type: string }[] = [];
+  let total = 0;
+  for (const p of files) {
+    const abs = path.resolve(CWD, p);
+    if (abs !== CWD && !abs.startsWith(CWD + path.sep))
+      throw new Error(`${p}: refused (outside the workspace)`);
+    const stat = fs.statSync(abs); // missing file -> throws, tool surfaces it
+    if (stat.isDirectory()) throw new Error(`${p}: is a directory`);
+    total += stat.size;
+    if (total > MAX_ATTACH_TOTAL)
+      throw new Error(
+        `attachments exceed ${MAX_ATTACH_TOTAL / 1024 / 1024}MB total`,
+      );
+    const name = path.basename(abs);
+    if (!/^[\w .+()-]+$/.test(name))
+      throw new Error(`${p}: unsafe attachment name`);
+    fs.copyFileSync(abs, path.join(dir, name));
+    const ext = name.split(".").pop()?.toLowerCase() ?? "";
+    out.push({ name, type: ATTACH_MIME[ext] ?? "application/octet-stream" });
+  }
+  return out;
+}
+
 // handoff: prepend recent session transcript so the question isn't out of the blue.
 export function recentTranscript(ctx: any): string {
   const file = ctx?.sessionManager?.getSessionFile?.();
@@ -515,6 +585,7 @@ async function runAsk(
     importAs?: string;
     sentUpTo?: { id: string; ts: number };
     returnOnly?: boolean; // machine use: return the answer, don't import it
+    files?: string[]; // workspace paths to attach (validated + staged)
   },
 ) {
   const st = bridgeStatus();
@@ -534,6 +605,9 @@ async function runAsk(
     label: opts?.importAs,
   };
   appendOp(op);
+  const files = opts?.files?.length
+    ? stageAttachments(opts.files, op.id)
+    : undefined;
   const wire =
     mode === "advisor" || mode === "temp" || mode === "side-start"
       ? question + NEED_FOOTER
@@ -546,6 +620,7 @@ async function runAsk(
       mode: op.mode,
       question: wire,
       workspace: process.cwd(),
+      files,
     }),
   );
   // advisor handoff cursor: ChatGPT now has everything up to here — later
@@ -640,8 +715,9 @@ export async function askChatGPT(
   ctx: any,
   question: string,
   mode: "advisor" | "temp" = "advisor",
+  files?: string[],
 ): Promise<{ answer: string; url: string } | undefined> {
-  return runAsk(pi, ctx, question, mode, 0, { returnOnly: true });
+  return runAsk(pi, ctx, question, mode, 0, { returnOnly: true, files });
 }
 
 // modes whose results are importable content; side-start/close/new are control ops
@@ -805,6 +881,13 @@ export default function (pi: ExtensionAPI) {
           description:
             "advisor (default): continue this project's conversation; temp: one-off Temporary Chat",
         },
+        files: {
+          type: "array",
+          maxItems: 3,
+          items: { type: "string" },
+          description:
+            "Optional workspace paths to attach to the question (max 3, 2MB total). Sent as real file attachments — screenshots, PDFs, source files.",
+        },
       },
       required: ["question"],
     } as any,
@@ -826,7 +909,10 @@ export default function (pi: ExtensionAPI) {
         String(params.question),
         params.mode === "temp" ? "temp" : "advisor",
         0,
-        { returnOnly: true },
+        {
+          returnOnly: true,
+          files: Array.isArray(params.files) ? params.files : undefined,
+        },
       );
       if (!r)
         return {
