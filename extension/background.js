@@ -227,7 +227,14 @@ async function getAdvisorTab(workspace) {
       await chrome.tabs.query({ url: `*://chatgpt.com${path}*` })
     )[0];
     if (found) {
-      await waitForContent(found.id, 0); // already has a content script
+      try {
+        await waitForContent(found.id, 0); // already has a live content script
+      } catch {
+        // stale/orphaned content script (e.g. tab predates an extension
+        // reload): refresh — same conversation URL reloads, new script injects
+        await chrome.tabs.reload(found.id);
+      }
+      await waitForContent(found.id, 30000);
       return { tab: found, fresh: false };
     }
   }
