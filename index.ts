@@ -491,6 +491,10 @@ function showStatus(ctx: any) {
         )
         .join(", ")}`,
     );
+  lines.push(
+    "usage: /chatgpt <q> | handoff <q> | handoff llm: <q> | handoff <topic>: <q>",
+    "options: /chatgpt setup",
+  );
   ctx.ui.notify(lines.filter(Boolean).join("\n"), "info");
 }
 
@@ -717,20 +721,25 @@ async function setupMenu(ctx: any) {
         saveCfg(cfg);
       } else ctx.ui.notify("enter a number between 1000 and 200000", "error");
     } else if (pick.startsWith("summary model")) {
+      // scopedModels entries carry a Model object, not a string id
+      const mid = (m: any): string =>
+        typeof m === "string"
+          ? m
+          : (m?.id ??
+            `${m?.provider ?? "model"}/${m?.modelId ?? m?.name ?? "?"}`);
       const scoped = [
         ...new Set(
           (ctx.scopedModels ?? []).map(
             (s: any) =>
-              `${s.model}${s.thinkingLevel ? `:${s.thinkingLevel}` : ""}`,
+              `${mid(s.model)}${s.thinkingLevel ? `:${s.thinkingLevel}` : ""}`,
           ),
         ),
       ];
-      const m = await ctx.ui.select("summary model", [
-        ...scoped,
-        "(current session model)",
-        "type a model id…",
-        "back",
-      ]);
+      const m = await ctx.ui.select(
+        "summary model",
+        [...scoped, "(current session model)", "type a model id…", "back"],
+        { enableSearch: true } as any,
+      );
       if (m === "type a model id…") {
         const t = await ctx.ui.input(
           "model id (provider/id[:thinking])",
@@ -807,7 +816,9 @@ export default function (pi: ExtensionAPI) {
       ctx: any,
     ) {
       onUpdate?.({
-        content: [{ type: "text", text: "asking ChatGPT — this can take a while" }],
+        content: [
+          { type: "text", text: "asking ChatGPT — this can take a while" },
+        ],
       });
       const r = await runAsk(
         pi,
