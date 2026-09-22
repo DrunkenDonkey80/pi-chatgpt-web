@@ -187,49 +187,52 @@ async function waitForContent(tabId, timeoutMs) {
 }
 
 // --- side discussion (M4) ---
-// Dedicated tab bound like the advisor tab; conversation URL persisted for
-// close-and-resume. The user continues the discussion in the tab by hand;
+// One dedicated tab + conversation URL per project workspace (like the
+// advisor threads). The user continues the discussion in the tab by hand;
 // pi imports only what the user approves (summary / last exchange).
-async function getSideTab(mustExist) {
-  const { sideTabId, sideUrl } = await chrome.storage.local.get([
-    "sideTabId",
-    "sideUrl",
-  ]);
-  if (sideTabId) {
+async function getSideTab(workspace, mustExist) {
+  const { sides = {} } = await chrome.storage.local.get("sides");
+  const rec = sides[workspace];
+  if (rec?.tabId) {
     try {
-      const tab = await chrome.tabs.get(sideTabId);
+      const tab = await chrome.tabs.get(rec.tabId);
       if (tab.url && tab.url.startsWith("https://chatgpt.com/")) {
         await waitForContent(tab.id, 0);
         return tab;
       }
     } catch {}
   }
-  if (mustExist && !sideUrl)
-    throw new Error("no side discussion open — start one with /sidegpt start");
+  if (mustExist && !rec?.url)
+    throw new Error(
+      "no side discussion open for this project — start one with /sidegpt start",
+    );
   const tab = await chrome.tabs.create({
-    url: sideUrl || "https://chatgpt.com/",
+    url: rec?.url || "https://chatgpt.com/",
     active: false,
   });
   await waitForContent(tab.id, 30000);
-  await chrome.storage.local.set({ sideTabId: tab.id });
+  sides[workspace] = { ...rec, tabId: tab.id };
+  await chrome.storage.local.set({ sides });
   return tab;
 }
 
 async function sideCommand(cmd) {
+  const workspace = cmd.workspace || "default";
   if (cmd.mode === "side-close" || cmd.mode === "side-new") {
-    const { sideTabId } = await chrome.storage.local.get("sideTabId");
-    if (sideTabId) {
+    const { sides = {} } = await chrome.storage.local.get("sides");
+    const rec = sides[workspace];
+    if (rec?.tabId) {
       try {
-        await chrome.tabs.remove(sideTabId);
+        await chrome.tabs.remove(rec.tabId);
       } catch {}
     }
-    await chrome.storage.local.remove(
-      cmd.mode === "side-new" ? ["sideTabId", "sideUrl"] : "sideTabId",
-    );
+    if (cmd.mode === "side-new") delete sides[workspace];
+    else sides[workspace] = { url: rec?.url }; // close: keep URL to resume
+    await chrome.storage.local.set({ sides });
     sendResult({ id: cmd.id, ok: true, mode: cmd.mode });
     return;
   }
-  const tab = await getSideTab(cmd.mode !== "side-start");
+  const tab = await getSideTab(workspace, cmd.mode !== "side-start");
   const res = await withTimeout(
     chrome.tabs.sendMessage(tab.id, {
       type: "ask",
@@ -240,7 +243,15 @@ async function sideCommand(cmd) {
     ASK_TIMEOUT_MS,
     "side discussion did not finish in time",
   );
-  if (res.url) await chrome.storage.local.set({ sideUrl: res.url });
+  if (res.url) {
+    const { sides = {} } = await chrome.storage.local.get("sides");
+    sides[workspace] = {
+      ...(sides[workspace] || {}),
+      tabId: tab.id,
+      url: res.url,
+    };
+    await chrome.storage.local.set({ sides });
+  }
   if (cmd.mode === "side-start")
     await chrome.tabs.update(tab.id, { active: true }); // hand over to the user
   sendResult({ id: cmd.id, ...res, mode: cmd.mode });

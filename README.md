@@ -99,7 +99,8 @@ Advisor threads are **per project**: each workspace folder gets its own ChatGPT 
 project. The first message of a new thread is labeled `[project: <folder>]` so ChatGPT's
 auto-title names it — rename it by hand if you like. The conversation URL is remembered, so
 closing the tab or restarting Helium resumes the same thread; `/chatgpt` status lists the
-threads it knows.
+threads it knows. Side discussions (`/sidegpt`) are per-project the same way: each folder
+gets its own side tab and conversation.
 
 ### NEED: — ChatGPT can read your files
 
@@ -114,6 +115,19 @@ budget, `node_modules`/`.git` skipped), sends them back on the same conversation
 real answer gets imported. Up to 2 rounds per consultation, advisor thread only (temporary
 chats can't be continued). `NEED: .` asks for the file tree. If it requests something outside
 the workspace, it gets refused in-band.
+
+## ChatGPT as an agent
+
+Other extensions — and any agent running in this pi process — can use ChatGPT without
+importing anything into your session transcript:
+
+- **Tool**: `chatgpt_consult` is registered for the LLM. Any session, subagent, or ce-workflow
+  agent can call it with `{question, mode?}`. Advisor mode (default) continues this project's
+  conversation, `NEED:` file requests are answered automatically (≤2 rounds), and the final
+  answer is returned to the calling agent only.
+- **Direct call**: extension code can import this module and call
+  `askChatGPT(pi, ctx, question, "advisor" | "temp")` → `{answer, url}` — same flow, no
+  transcript import.
 
 ## Disable / remove
 

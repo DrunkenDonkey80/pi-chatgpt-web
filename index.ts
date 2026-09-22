@@ -28,7 +28,10 @@ interface Cfg {
   handoffMaxChars: number; // transcript budget for handoff, default 6000
   summaryModel: string; // "" = current session model
   summaryEffort: string; // "" = model default; else minimal|low|medium|high|xhigh
-  advisors: Record<string, { sentUpTo?: { id: string; ts: number } } | undefined>; // per-project advisor state, keyed by workspace dir
+  advisors: Record<
+    string,
+    { sentUpTo?: { id: string; ts: number } } | undefined
+  >; // per-project advisor state, keyed by workspace dir
 }
 const SETTINGS =
   process.env.PI_CHATGPT_SETTINGS || path.join(SPOOL, "settings.json");
@@ -484,8 +487,7 @@ function showStatus(ctx: any) {
     lines.push(
       `advisor threads: ${threads
         .map(
-          ([ws]) =>
-            path.basename(ws) + (ws === process.cwd() ? " (this)" : ""),
+          ([ws]) => path.basename(ws) + (ws === process.cwd() ? " (this)" : ""),
         )
         .join(", ")}`,
     );
@@ -508,6 +510,7 @@ async function runAsk(
   opts?: {
     importAs?: string;
     sentUpTo?: { id: string; ts: number };
+    returnOnly?: boolean; // machine use: return the answer, don't import it
   },
 ) {
   const st = bridgeStatus();
@@ -593,7 +596,10 @@ async function runAsk(
               `Files you requested:\n\n${readRequested(need)}`,
               "advisor",
               depth + 1,
-              { importAs: opts?.importAs ?? question },
+              {
+                importAs: opts?.importAs ?? question,
+                returnOnly: opts?.returnOnly,
+              },
             );
           }
           markOp(op.id, {
@@ -601,6 +607,7 @@ async function runAsk(
             url: m.url,
             answerChars: (m.answer || "").length,
           });
+          if (opts?.returnOnly) return { answer: m.answer, url: m.url };
           importConsultation(pi, op, m.answer, m.url);
           ctx.ui.notify(`imported ChatGPT answer (${m.url})`, "info");
         }
@@ -620,6 +627,17 @@ async function runAsk(
     }
     await sleep(500);
   }
+}
+
+// Machine-facing API for other extensions (ce-workflow et al.): ask and get
+// the answer back instead of importing it into this session's transcript.
+export async function askChatGPT(
+  pi: ExtensionAPI,
+  ctx: any,
+  question: string,
+  mode: "advisor" | "temp" = "advisor",
+): Promise<{ answer: string; url: string } | undefined> {
+  return runAsk(pi, ctx, question, mode, 0, { returnOnly: true });
 }
 
 // modes whose results are importable content; side-start/close/new are control ops
@@ -754,6 +772,69 @@ async function setupMenu(ctx: any) {
 }
 
 export default function (pi: ExtensionAPI) {
+  // ChatGPT as an agent: callable by the LLM (this session, subagents, or
+  // agents of other extensions) — the answer returns to the caller only.
+  pi.registerTool({
+    name: "chatgpt_consult",
+    label: "Consult ChatGPT",
+    description:
+      "Ask ChatGPT web (the user's logged-in browser session) a question and return its answer. Advisor mode continues this project's dedicated conversation; files it asks for are sent automatically.",
+    promptSnippet: "Consult ChatGPT web as an external advisor",
+    promptGuidelines: [
+      "Use chatgpt_consult when the user wants ChatGPT's take, a second opinion, or ChatGPT-specific knowledge.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {
+        question: {
+          type: "string",
+          description: "The question to ask ChatGPT",
+        },
+        mode: {
+          type: "string",
+          enum: ["advisor", "temp"],
+          description:
+            "advisor (default): continue this project's conversation; temp: one-off Temporary Chat",
+        },
+      },
+      required: ["question"],
+    } as any,
+    async execute(
+      _id: string,
+      params: any,
+      _sig: AbortSignal,
+      onUpdate: any,
+      ctx: any,
+    ) {
+      onUpdate?.({
+        content: [{ type: "text", text: "asking ChatGPT — this can take a while" }],
+      });
+      const r = await runAsk(
+        pi,
+        ctx,
+        String(params.question),
+        params.mode === "temp" ? "temp" : "advisor",
+        0,
+        { returnOnly: true },
+      );
+      if (!r)
+        return {
+          content: [
+            {
+              type: "text",
+              text: "ChatGPT consultation failed — check the session notifications for details.",
+            },
+          ],
+          details: {},
+        };
+      return {
+        content: [
+          { type: "text", text: `${r.answer}\n\n(conversation: ${r.url})` },
+        ],
+        details: { url: r.url },
+      };
+    },
+  });
   pi.registerCommand("chatgpt", {
     description:
       "/chatgpt <question> | handoff [focus]: <question> — consult ChatGPT web (advisor) and import Q+A; no args: status; recover: import captured; setup: options",
