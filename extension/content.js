@@ -3,8 +3,10 @@
 (() => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // whitespace-insensitive compare: the composer's textContent drops the
-  // newlines we inserted (rendered as <br>/blocks), so never compare verbatim
-  const norm = (s) => (s || "").replace(/\s+/g, " ");
+  // newlines we inserted ENTIRELY (paragraph breaks contribute no character
+  // — not even a space), so strip all whitespace on both sides, never
+  // collapse-and-compare
+  const norm = (s) => (s || "").replace(/\s+/g, "");
   const turns = () =>
     document.querySelectorAll('[data-message-author-role="assistant"]').length;
 
