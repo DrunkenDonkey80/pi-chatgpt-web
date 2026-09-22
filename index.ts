@@ -642,6 +642,7 @@ async function runAsk(
   for (;;) {
     const r = readJson(resultFile);
     if (r && r.msg) {
+      ctx.ui.notify("ChatGPT responded — processing…", "info");
       fs.rmSync(resultFile, { force: true });
       const m = r.msg;
       if (m.ok) {
