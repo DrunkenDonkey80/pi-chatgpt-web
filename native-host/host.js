@@ -64,6 +64,10 @@ function onMessage(msg) {
     const tmp = file + ".tmp";
     fs.writeFileSync(tmp, JSON.stringify({ ts: Date.now(), msg }, null, 2));
     fs.renameSync(tmp, file);
+    // ask completed — its command file is no longer needed for crash replay
+    try {
+      fs.unlinkSync(path.join(SPOOL, `command-${msg.id}.json`));
+    } catch {}
     send({ type: "result-ack", id: msg.id });
   }
   // serve staged attachments in 512KB base64 chunks — never arbitrary paths
@@ -73,11 +77,7 @@ function onMessage(msg) {
     typeof msg.name === "string" &&
     Number.isInteger(msg.offset)
   ) {
-    const file = path.join(
-      SPOOL,
-      `attach-${msg.id}`,
-      path.basename(msg.name),
-    );
+    const file = path.join(SPOOL, `attach-${msg.id}`, path.basename(msg.name));
     try {
       const buf = fs.readFileSync(file);
       const slice = buf.subarray(msg.offset, msg.offset + 512 * 1024);
@@ -101,8 +101,12 @@ function onMessage(msg) {
 }
 
 // --- duties ---
-// spool poll: relay command files until the extension acks them (idempotent
-// resend — the extension dedups by id, so a lost ack self-heals).
+// spool poll: relay command files until the extension acks them. The file
+// is KEPT until the result lands — if the extension's service worker dies
+// mid-ask, Chrome restarts it (and this host), and the fresh host resends
+// the still-unresulted command (fresh ackedCommands, fresh extension seen-set).
+// ponytail: a crash after send but before result can replay a duplicate
+// question; the composer draft-guard usually blocks the double-fill.
 setInterval(() => {
   let files = [];
   try {
@@ -113,12 +117,7 @@ setInterval(() => {
   for (const f of files) {
     if (!f.startsWith("command-") || !f.endsWith(".json")) continue;
     const id = f.slice("command-".length, -".json".length);
-    if (ackedCommands.has(id)) {
-      try {
-        fs.unlinkSync(path.join(SPOOL, f));
-      } catch {}
-      continue;
-    }
+    if (ackedCommands.has(id)) continue; // in flight — keep file for crash replay
     try {
       const cmd = JSON.parse(fs.readFileSync(path.join(SPOOL, f), "utf8"));
       send({ ...cmd, type: "command" });

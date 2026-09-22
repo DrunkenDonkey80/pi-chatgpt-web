@@ -586,6 +586,7 @@ async function runAsk(
     sentUpTo?: { id: string; ts: number };
     returnOnly?: boolean; // machine use: return the answer, don't import it
     files?: string[]; // workspace paths to attach (validated + staged)
+    signal?: AbortSignal; // abort (ESC) cancels the wait instead of hanging
   },
 ) {
   const st = bridgeStatus();
@@ -678,6 +679,7 @@ async function runAsk(
               {
                 importAs: opts?.importAs ?? question,
                 returnOnly: opts?.returnOnly,
+                signal: opts?.signal,
               },
             );
           }
@@ -702,6 +704,11 @@ async function runAsk(
         "timed out waiting for ChatGPT. The tab may still be mid-generation; check the advisor tab, then /chatgpt recover.",
         "error",
       );
+      return;
+    }
+    if (opts?.signal?.aborted) {
+      markOp(op.id, { status: "failed", error: "aborted" });
+      ctx.ui.notify("consult aborted — waiting cancelled", "info");
       return;
     }
     await sleep(500);
@@ -894,7 +901,7 @@ export default function (pi: ExtensionAPI) {
     async execute(
       _id: string,
       params: any,
-      _sig: AbortSignal,
+      sig: AbortSignal,
       onUpdate: any,
       ctx: any,
     ) {
@@ -912,6 +919,7 @@ export default function (pi: ExtensionAPI) {
         {
           returnOnly: true,
           files: Array.isArray(params.files) ? params.files : undefined,
+          signal: sig,
         },
       );
       if (!r)
