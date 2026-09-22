@@ -2,6 +2,9 @@
 // appeared → wait for completion → extract DOM→markdown. M1-proven flow.
 (() => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // whitespace-insensitive compare: the composer's textContent drops the
+  // newlines we inserted (rendered as <br>/blocks), so never compare verbatim
+  const norm = (s) => (s || "").replace(/\s+/g, " ");
   const turns = () =>
     document.querySelectorAll('[data-message-author-role="assistant"]').length;
 
@@ -114,7 +117,7 @@
       // let React/ProseMirror commit the insertion before touching send
       await sleep(300);
       const readback = (composer.textContent || "").trim();
-      if (!readback.startsWith(q.slice(0, 20)))
+      if (!norm(readback).startsWith(norm(q).slice(0, 40)))
         throw new Error(
           `composer readback mismatch: "${readback.slice(0, 40)}"`,
         );
@@ -160,7 +163,7 @@
       // verify OUR question was actually sent: last user turn must start with
       // the question prefix and the composer must have cleared
       status("verifying our turn…");
-      const qPrefix = q.slice(0, 40);
+      const qPrefix = norm(q).slice(0, 60);
       let t0 = Date.now();
       let enterRetryTried = false;
       let userTurn = null;
@@ -170,7 +173,7 @@
         );
         userTurn = users.length ? users[users.length - 1] : null;
         const okTurn =
-          userTurn && (userTurn.innerText || "").trim().startsWith(qPrefix);
+          userTurn && norm(userTurn.innerText).startsWith(qPrefix);
         if (okTurn && !(composer.textContent || "").trim()) break;
         if (!enterRetryTried && Date.now() - t0 > 8000) {
           enterRetryTried = true;
@@ -180,7 +183,7 @@
         await sleep(400);
       }
       const lastUser = userTurn ? (userTurn.innerText || "").trim() : "";
-      if (!lastUser.startsWith(qPrefix))
+      if (!norm(lastUser).startsWith(qPrefix))
         throw new Error(
           `send verification failed — last user turn: "${lastUser.slice(0, 60)}"; composer: "${(composer.textContent || "").slice(0, 40)}"; diag: ${diag.join(", ")}`,
         );
@@ -226,6 +229,16 @@
       return { ok: true, url: location.href, question: q, answer };
     } finally {
       clearChip();
+      // a failed ask must not leave our draft wedged in the composer — the
+      // next ask refuses to overwrite a draft, so clear ours on the way out
+      try {
+        const c = document.querySelector("#prompt-textarea");
+        if (c && (c.textContent || "").trim()) {
+          c.focus();
+          document.execCommand("selectAll");
+          document.execCommand("delete");
+        }
+      } catch {}
     }
   }
 
