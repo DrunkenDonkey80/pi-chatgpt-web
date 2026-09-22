@@ -32,7 +32,7 @@
       return;
     }
     if (msg && msg.type === "ask") {
-      ask(msg.id, msg.question, msg.mode)
+      ask(msg.id, msg.question, msg.mode, msg.attachments)
         .then(sendResponse)
         .catch((e) =>
           sendResponse({
@@ -44,7 +44,7 @@
     }
   });
 
-  async function ask(_id, question, mode) {
+  async function ask(_id, question, mode, attachments) {
     try {
       const q = question;
       if (mode === "side-last") {
@@ -110,7 +110,7 @@
         throw new Error(
           `composer has a draft (${draft.length} chars) — refusing to overwrite; clear it in the tab first`,
         );
-      if (msg.attachments?.length) {
+      if (attachments?.length) {
         status("attaching files…");
         // the file input is lazy: click the paperclip once to materialize it
         let input = null;
@@ -128,7 +128,7 @@
         }
         if (!input) throw new Error("composer file input not found");
         const dt = new DataTransfer();
-        for (const a of msg.attachments) {
+        for (const a of attachments) {
           const bytes = Uint8Array.from(atob(a.data), (c) => c.charCodeAt(0));
           dt.items.add(
             new File([bytes], a.name, {

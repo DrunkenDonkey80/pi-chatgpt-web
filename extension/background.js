@@ -218,23 +218,26 @@ function withTimeout(p, ms, what) {
 async function getAdvisorTab(workspace) {
   const { advisors = {} } = await chrome.storage.local.get("advisors");
   const rec = advisors[workspace];
-  if (rec?.tabId) {
-    try {
-      const tab = await chrome.tabs.get(rec.tabId);
-      if (tab.url && tab.url.startsWith("https://chatgpt.com/")) {
-        await waitForContent(tab.id, 0); // already has a content script
-        return { tab, fresh: false };
-      }
-    } catch {}
+  // the saved conversation URL is the durable link: reuse ANY tab already
+  // on that conversation — whatever tab is active, whichever window it is
+  // in. Never match by tab id alone: tabs drift to other chats.
+  if (rec?.url?.includes("/c/")) {
+    const path = rec.url.slice("https://chatgpt.com".length);
+    const found = (
+      await chrome.tabs.query({ url: `*://chatgpt.com${path}*` })
+    )[0];
+    if (found) {
+      await waitForContent(found.id, 0); // already has a content script
+      return { tab: found, fresh: false };
+    }
   }
-  // resume the saved conversation if there is one; else a brand-new chat
+  // no live tab on the conversation: reopen it (ChatGPT restores the
+  // thread server-side); only a first-ever ask starts a brand-new chat
   const tab = await chrome.tabs.create({
     url: rec?.url || "https://chatgpt.com/",
     active: false,
   });
   await waitForContent(tab.id, 30000);
-  advisors[workspace] = { ...rec, tabId: tab.id };
-  await chrome.storage.local.set({ advisors });
   return { tab, fresh: !rec?.url };
 }
 
