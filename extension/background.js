@@ -45,11 +45,12 @@ async function pullFile(id, name) {
       post({ type: "get-file", reqId, id, name, offset });
     });
     if (chunk.error) throw new Error(`host get-file: ${chunk.error}`);
-    parts.push(Buffer.from(chunk.data, "base64"));
+    const bytes = atob(chunk.data);
+    parts.push(bytes);
     size = chunk.size;
-    offset += parts[parts.length - 1].length;
+    offset += bytes.length;
   }
-  return Buffer.concat(parts);
+  return btoa(parts.join(""));
 }
 
 function connect() {
@@ -63,6 +64,10 @@ function connect() {
   for (const r of results.values()) post(r); // replay unsent results
 }
 connect();
+// browser start: give the worker a reason to wake so connect() runs and the
+// host (and its spool replay) comes up without anyone opening chatgpt.com
+chrome.runtime.onStartup.addListener(() => {});
+chrome.runtime.onInstalled.addListener(() => {});
 
 function post(msg) {
   if (!port) connect(); // port dropped while we were idle — reconnect
@@ -122,17 +127,17 @@ async function handleCommand(cmd) {
   }
   busyId = cmd.id;
   startKeepalive();
-  // pull staged attachments over the port before dispatching the ask
-  const attachments = [];
-  if (cmd.files?.length) {
-    for (const f of cmd.files)
-      attachments.push({
-        name: f.name,
-        type: f.type,
-        data: (await pullFile(cmd.id, f.name)).toString("base64"),
-      });
-  }
   try {
+    // pull staged attachments over the port before dispatching the ask
+    const attachments = [];
+    if (cmd.files?.length) {
+      for (const f of cmd.files)
+        attachments.push({
+          name: f.name,
+          type: f.type,
+          data: await pullFile(cmd.id, f.name),
+        });
+    }
     if (cmd.mode === "temp") {
       // fresh temporary-chat tab per question; closed after the result is spooled
       const tab = await chrome.tabs.create({
@@ -141,14 +146,14 @@ async function handleCommand(cmd) {
       });
       try {
         await waitForContent(tab.id, 30000);
-        const res = await withTimeout(
-          chrome.tabs.sendMessage(tab.id, {
+        const res = await askTab(
+          tab.id, {
             type: "ask",
             id: cmd.id,
             question: cmd.question,
             mode: "temp",
             attachments,
-          }),
+          },
           ASK_TIMEOUT_MS,
           "temporary chat did not finish in time",
         );
@@ -166,13 +171,13 @@ async function handleCommand(cmd) {
     }
     if (cmd.mode === "fetch-last" || cmd.mode === "fetch-ask") {
       const tab = await getTabForUrl(cmd.url);
-      const res = await withTimeout(
-        chrome.tabs.sendMessage(tab.id, {
+      const res = await askTab(
+        tab.id, {
           type: "ask",
           id: cmd.id,
           question: cmd.question || "",
           mode: cmd.mode === "fetch-last" ? "side-last" : "advisor",
-        }),
+        },
         ASK_TIMEOUT_MS,
         "chatgpt fetch did not finish in time",
       );
@@ -188,14 +193,14 @@ async function handleCommand(cmd) {
       const name = workspace.split(/[\\/]/).filter(Boolean).pop() || workspace;
       question = `[project: ${name}]\n\n${question}`;
     }
-    const res = await withTimeout(
-      chrome.tabs.sendMessage(tab.id, {
+    const res = await askTab(
+      tab.id, {
         type: "ask",
         id: cmd.id,
         question,
         mode: "advisor",
         attachments,
-      }),
+      },
       ASK_TIMEOUT_MS,
       "chatgpt tab did not finish in time",
     );
@@ -216,6 +221,30 @@ async function handleCommand(cmd) {
     busyId = null;
     stopKeepalive();
   }
+}
+
+// tabs.sendMessage whose channel dies (tab navigated/reloaded mid-ask) gives
+// Chrome's opaque "message channel closed" error: report what the tab did.
+async function askTab(tabId, msg, ms, what) {
+  try {
+    return await withTimeout(chrome.tabs.sendMessage(tabId, msg), ms, what);
+  } catch (e) {
+    throw await tabCause(tabId, e);
+  }
+}
+
+async function tabCause(tabId, e) {
+  let url = "";
+  try {
+    url = (await chrome.tabs.get(tabId)).url || "";
+  } catch {
+    return new Error("the ChatGPT tab was closed mid-ask");
+  }
+  if (!url.startsWith("https://chatgpt.com/") || url.includes("/auth/"))
+    return new Error(
+      `not logged in to ChatGPT in this browser (tab went to ${url.split("?")[0]}); sign in at chatgpt.com, then retry`,
+    );
+  return e;
 }
 
 function withTimeout(p, ms, what) {
@@ -278,7 +307,10 @@ async function waitForContent(tabId, timeoutMs) {
       return;
     } catch {
       if (Date.now() - t0 > timeoutMs)
-        throw new Error("content script not ready in advisor tab");
+        throw await tabCause(
+          tabId,
+          new Error("content script not ready in advisor tab"),
+        );
       await sleep(500);
     }
   }
@@ -331,13 +363,13 @@ async function sideCommand(cmd) {
     return;
   }
   const tab = await getSideTab(workspace, cmd.mode !== "side-start");
-  const res = await withTimeout(
-    chrome.tabs.sendMessage(tab.id, {
+  const res = await askTab(
+    tab.id, {
       type: "ask",
       id: cmd.id,
       question: cmd.question,
       mode: cmd.mode,
-    }),
+    },
     ASK_TIMEOUT_MS,
     "side discussion did not finish in time",
   );

@@ -22,7 +22,8 @@ daily browser's logged-in session — no API key, no second browser, no debug po
 ```
 
 The imported consultation lands in the pi session as a custom message — visible to the model on
-its next turn, without spending an extra model call.
+its next turn, without spending an extra model call. If the bridge is down, pi opens ChatGPT through
+the operating system's default URL handler; it never chooses a browser brand.
 
 ## How it works
 
@@ -41,11 +42,11 @@ exactly one pinned extension ID.
 
 ## Install (once, ~2 minutes)
 
-1. **Pack + register** — `node install.js`. It auto-detects Helium, Chrome, Chromium, or Edge,
-   packs `extension/`, registers the native host using this checkout's current path, and pins
-   the stable extension ID. For another Chromium executable, use
-   `node install.js --browser "C:\path\to\chrome.exe"` or set `PI_CHATGPT_BROWSER`.
-2. **Load the extension** — `chrome://extensions` → enable **Developer mode** → **Load
+1. **Pack + register** — `node install.js`. It uses the operating system's default browser,
+   which must be Chromium-compatible, packs `extension/`, registers the native host using this
+   checkout's current path, and pins the stable extension ID. `--browser <path>` is available
+   only when a different compatible executable is needed for packaging.
+2. **Load the extension in the default browser** — `chrome://extensions` → enable **Developer mode** → **Load
    unpacked** → select this repo's `extension/` folder. The manifest carries a committed key,
    so the extension ID is **stable** (`ajlnbjgehaidkajobnhkmchjaknjnalj`) no matter where the
    folder lives — it matches what `install.js` pinned, which is what makes the bridge work.
@@ -103,7 +104,7 @@ Advisor threads are **per project**: each workspace folder gets its own ChatGPT 
 (dedicated tab), so alternating `/chatgpt` between ten open projects stays consistent per
 project. The first message of a new thread is labeled `[project: <folder>]` so ChatGPT's
 auto-title names it — rename it by hand if you like. The conversation URL is remembered, so
-closing the tab or restarting Helium resumes the same thread; `/chatgpt` status lists the
+closing the tab or restarting the default browser resumes the same thread; `/chatgpt` status lists the
 threads it knows. Side discussions (`/sidegpt`) are per-project the same way: each folder
 gets its own side tab and conversation.
 
@@ -170,7 +171,7 @@ Driving the web UI is automated use of ChatGPT; that's your account risk to own.
 
 ## Development
 
-- Self-checks: `node --experimental-strip-types test/handoff.test.mjs`
+- Self-checks: `node --experimental-strip-types test/handoff.test.mjs && node test/background.test.mjs`
 - After editing `extension/`, re-run `node install.js` and reload the unpacked extension.
 - Architecture history and the why of every decision: `PLAN.md`, `RESEARCH.md`,
   `spike/NOTES.md`.

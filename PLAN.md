@@ -12,13 +12,13 @@ A private, easy-to-disable Pi integration that removes manual copying between Pi
 - `/tempgpt <question>` does the same through ChatGPT's actual Temporary Chat, without touching the persistent advisor conversation.
 - `/chatgpt` (bare, later milestone) opens an extended side discussion; only an approved summary or last exchange is imported.
 - ChatGPT receives only explicitly sent text, never Pi's whole context.
-- Runs inside the user's **daily Helium browser** — no second browser, no login choreography, no captcha exposure.
+- Runs inside the user's **default daily browser** — no second browser, no login choreography, no captcha exposure.
 
 ### Decisions (settled)
 
 | Decision | Direction |
 | --- | --- |
-| Transport | MV3 Chrome extension in daily Helium + native messaging host + spool files. **No Playwright, no CDP, no debug port, no second browser** |
+| Transport | MV3 Chrome extension in the default Chromium-compatible browser + native messaging host + spool files. **No Playwright, no CDP, no debug port, no second browser** |
 | Scope of extension power | `chatgpt.com` only (host permissions + content script matches) |
 | Login | None needed — rides the user's logged-in daily browser |
 | Concurrency | One consultation in flight at a time (enforced browser-side) |
@@ -93,10 +93,10 @@ Dependencies: `playwright` is **dropped** (uninstall when M2 starts; probe evide
 
 ## 5. Setup (one-time, documented in README)
 
-1. Load `extension/` as an unpacked extension in Helium (`chrome://extensions` → Developer mode).
+1. Load `extension/` as an unpacked extension in the default browser (`chrome://extensions` → Developer mode).
 2. Read the assigned extension ID and put it in the host manifest's `allowed_origins`.
 3. Run `node native-host/regcheck.js` (writes + verifies HKCU registry entries pointing at the host manifest, both roots).
-4. Keep Helium running while consulting. That's the whole story — no login step, no browser install.
+4. Keep the default browser running while consulting. That's the whole story — no login step, no browser install.
 
 Note: unpacked extension IDs derive from the **absolute folder path**. Moving `extension/` changes the ID and breaks the registry pin — re-run regcheck after any move (regcheck prints the expected ID derivation hint; README documents it).
 
@@ -144,7 +144,7 @@ Rules: slash-command argument is the entire web prompt (no auto-expanding file r
 - Account risk: driving the web UI via an extension is still automated use of ChatGPT — the v1 terms-of-use caution stands. Private use only; if challenges appear, stop and fall back to manual copy.
 - Extension blast radius: `chatgpt.com` host permissions only; answers are untrusted external text — escape terminal control sequences, never execute/open paths because ChatGPT said so.
 - No secrets in spool/logs by default; spool contains private conversation text — document location and OS-level protection honestly.
-- Easy off: disable the extension in Helium (port dies, host exits) and/or remove the Pi extension. No daemon survives; registry entries are inert without the extension (documented removal: `regcheck.js --remove`).
+- Easy off: disable the extension in the default browser (port dies, host exits) and/or remove the Pi extension. No daemon survives; registry entries are inert without the extension (documented removal: `regcheck.js --remove`).
 - Loading the pi extension must not start anything: no browser action, no native messaging, no spool writes until a command runs.
 - Manual fallback is documented (copy/paste via the visible tab), not built as a second product.
 
@@ -159,7 +159,7 @@ Rules: slash-command argument is the entire web prompt (no auto-expanding file r
 | Selector drift inside chatgpt.com | Operation fails with captured pre-state; spool keeps partials; never auto-retry sends |
 | Pi busy at capture | Hold result; import when idle after revalidating destination |
 | Pi session changed mid-flight | Hold for explicit recovery; no cross-session auto-import |
-| Helium closed mid-consultation | Port dies; operation marked needs-attention; answer may exist on the web — recovery offers to fetch it after reconnect |
+| Default browser closed mid-consultation | Port dies; operation marked needs-attention; answer may exist on the web — recovery offers to fetch it after reconnect |
 | Duplicate recovery attempts | Idempotent by operation id; no double import on the same branch |
 
 ## 12. Milestones
@@ -186,7 +186,7 @@ Decide browser-tab vs Pi panel from real usage; exit choices (import summary via
 
 ### M5 — hardening + README
 
-Failure matrix pass, no-secrets-in-logs check, disable/reload test, retention/local-data documentation, pinned known-good Helium behavior notes.
+Failure matrix pass, no-secrets-in-logs check, disable/reload test, retention/local-data documentation, pinned known-good default-browser behavior notes.
 
 ## 13. Definition of done
 

@@ -13,6 +13,7 @@ fs.mkdirSync(path.join(tmp, "sub"));
 fs.writeFileSync(path.join(tmp, "sub", "two.txt"), "BBB");
 process.chdir(tmp);
 process.env.PI_CHATGPT_SETTINGS = path.join(tmp, "settings.json");
+process.env.XDG_CONFIG_HOME = path.join(tmp, "runtime-config");
 const {
   needRequest,
   readRequested,
@@ -22,6 +23,9 @@ const {
   buildHandoff,
   stageAttachments,
   parseFetch,
+  browserRootsWithExtension,
+  defaultBrowserCommand,
+  selectDefaultBrowserRoot,
 } = await import("../index.ts");
 
 // --- needRequest -----------------------------------------------------------
@@ -111,6 +115,45 @@ const setCfg = (o) => {
 };
 const clearCfg = () => fs.rmSync(CFG, { force: true });
 clearCfg();
+
+// --- default browser -------------------------------------------------------
+assert.deepEqual(defaultBrowserCommand("linux"), {
+  command: "xdg-open",
+  args: ["https://chatgpt.com/"],
+});
+assert.deepEqual(defaultBrowserCommand("darwin"), {
+  command: "open",
+  args: ["https://chatgpt.com/"],
+});
+assert.equal(defaultBrowserCommand("win32").args.at(-1), "https://chatgpt.com/");
+
+const configHome = path.join(tmp, "config");
+const browserRoot = path.join(configHome, "vendor", "product");
+fs.mkdirSync(path.join(browserRoot, "Default"), { recursive: true });
+fs.writeFileSync(path.join(browserRoot, "Local State"), "{}");
+fs.writeFileSync(
+  path.join(browserRoot, "Default", "Preferences"),
+  '{"extensions":{"settings":{"abcdefghijklmnopabcdefghijklmnop":{}}}}',
+);
+fs.mkdirSync(path.join(configHome, "other", "Default"), { recursive: true });
+fs.writeFileSync(path.join(configHome, "other", "Local State"), "{}");
+fs.writeFileSync(path.join(configHome, "other", "Default", "Preferences"), "{}");
+assert.deepEqual(
+  browserRootsWithExtension(configHome, "abcdefghijklmnopabcdefghijklmnop"),
+  [browserRoot],
+  "native host targets only profiles carrying the extension",
+);
+assert.equal(
+  selectDefaultBrowserRoot(
+    ["/config/vendor/first", "/config/vendor/second"],
+    "second-browser.desktop",
+  ),
+  "/config/vendor/second",
+);
+assert.equal(
+  selectDefaultBrowserRoot(["/config/only"], "unknown.desktop"),
+  "/config/only",
+);
 
 // --- transcriptPairs -------------------------------------------------------
 const tp = transcriptPairs(sess);

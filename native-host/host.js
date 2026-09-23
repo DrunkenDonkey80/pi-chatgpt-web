@@ -10,6 +10,49 @@ const path = require("path");
 const SPOOL = path.join(__dirname, "..", "spool");
 fs.mkdirSync(SPOOL, { recursive: true });
 
+// single leader across browsers: every browser with the extension spawns its
+// own host; only the lock holder relays commands + heartbeats, so two open
+// browsers never both run the same ask. Standby hosts take over when the
+// leader's browser closes (dead pid).
+const LOCK = path.join(SPOOL, "host.lock");
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+};
+let leader = false;
+function isLeader() {
+  try {
+    fs.writeFileSync(LOCK, String(process.pid), { flag: "wx" });
+  } catch {
+    let pid = 0;
+    try {
+      pid = Number(fs.readFileSync(LOCK, "utf8"));
+    } catch {}
+    if (pid !== process.pid) {
+      if (!pid || !alive(pid)) {
+        try {
+          fs.unlinkSync(LOCK); // stale: claim it on the next tick
+        } catch {}
+      }
+      if (leader) log("lost leadership — standby");
+      return (leader = false);
+    }
+  }
+  if (!leader) log(`leader (pid ${process.pid})`);
+  return (leader = true);
+}
+process.on("exit", () => {
+  try {
+    if (Number(fs.readFileSync(LOCK, "utf8")) === process.pid)
+      fs.unlinkSync(LOCK);
+  } catch {}
+});
+process.on("SIGTERM", () => process.exit(0));
+
 // --- stdio framing (Chrome native messaging: 4-byte LE length + JSON) ---
 let buf = Buffer.alloc(0);
 process.stdin.on("data", (d) => {
@@ -108,6 +151,7 @@ function onMessage(msg) {
 // ponytail: a crash after send but before result can replay a duplicate
 // question; the composer draft-guard usually blocks the double-fill.
 setInterval(() => {
+  if (!isLeader()) return;
   let files = [];
   try {
     files = fs.readdirSync(SPOOL);
@@ -127,6 +171,7 @@ setInterval(() => {
 
 // heartbeat: pi treats >15s staleness as "bridge down"
 setInterval(() => {
+  if (!leader) return;
   try {
     fs.writeFileSync(
       path.join(SPOOL, "heartbeat.json"),

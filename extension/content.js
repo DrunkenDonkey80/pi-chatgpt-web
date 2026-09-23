@@ -193,8 +193,8 @@
         diag.push("enter-fallback");
       }
 
-      // verify OUR question was actually sent: last user turn must start with
-      // the question prefix and the composer must have cleared
+      // verify OUR question was actually sent: attachment chips can precede
+      // the question in the rendered user turn, and the composer must clear
       status("verifying our turn…");
       const qPrefix = norm(q).slice(0, 60);
       let t0 = Date.now();
@@ -205,7 +205,7 @@
           '[data-message-author-role="user"]',
         );
         userTurn = users.length ? users[users.length - 1] : null;
-        const okTurn = userTurn && norm(userTurn.innerText).startsWith(qPrefix);
+        const okTurn = userTurn && norm(userTurn.innerText).includes(qPrefix);
         if (okTurn && !(composer.textContent || "").trim()) break;
         if (!enterRetryTried && Date.now() - t0 > 8000) {
           enterRetryTried = true;
@@ -215,7 +215,7 @@
         await sleep(400);
       }
       const lastUser = userTurn ? (userTurn.innerText || "").trim() : "";
-      if (!norm(lastUser).startsWith(qPrefix))
+      if (!norm(lastUser).includes(qPrefix))
         throw new Error(
           `send verification failed — last user turn: "${lastUser.slice(0, 60)}"; composer: "${(composer.textContent || "").slice(0, 40)}"; diag: ${diag.join(", ")}`,
         );
@@ -224,7 +224,8 @@
       // Thinking models can reason for 5+ minutes before any assistant DOM
       // node exists — the stop button is the reliable "generation started"
       // signal, so accept either it or the new turn appearing.
-      const stopSel = 'button[data-testid="stop-button"]';
+      const stopSel =
+        'button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop streaming"]';
       const started = () =>
         turns() > prevCount || !!document.querySelector(stopSel);
       t0 = Date.now();
@@ -236,6 +237,15 @@
       t0 = Date.now();
       while (document.querySelector(stopSel) && Date.now() - t0 < 900000)
         await sleep(500);
+
+      // background tabs don't render: the DOM can freeze mid-stream and look
+      // "stable" while truncated. The conversation API is render-independent.
+      status("fetching final answer…");
+      const apiText = await apiAnswer(qPrefix, 900000).catch(() => null);
+      if (apiText) {
+        status("done");
+        return { ok: true, url: location.href, question: q, answer: apiText };
+      }
 
       status("checking stability…");
       let last = "";
@@ -272,6 +282,52 @@
         }
       } catch {}
     }
+  }
+
+  // final assistant message for OUR question from ChatGPT's own conversation
+  // endpoint (raw markdown). null = unavailable (temp chat, API change) →
+  // caller falls back to the DOM.
+  // ponytail: private endpoint; DOM fallback covers it if it changes.
+  async function apiAnswer(qPrefix, timeoutMs) {
+    const t0 = Date.now();
+    let id = null;
+    while (!id && Date.now() - t0 < 30000) {
+      id = (location.pathname.match(/\/c\/([0-9a-f-]{36})/) || [])[1];
+      if (!id) await sleep(500);
+    }
+    if (!id) return null;
+    const sess = await (await fetch("/api/auth/session")).json();
+    if (!sess?.accessToken) return null;
+    while (Date.now() - t0 < timeoutMs) {
+      const r = await fetch(`/backend-api/conversation/${id}`, {
+        headers: { Authorization: `Bearer ${sess.accessToken}` },
+      });
+      if (!r.ok) return null;
+      const c = await r.json();
+      const map = c.mapping || {};
+      const m = map[c.current_node]?.message;
+      if (
+        m?.author?.role === "assistant" &&
+        m.status === "finished_successfully" &&
+        m.end_turn !== false
+      ) {
+        // must answer OUR question: nearest user ancestor matches the prefix
+        let n = map[c.current_node];
+        while (n && n.message?.author?.role !== "user") n = map[n.parent];
+        const u = (n?.message?.content?.parts || [])
+          .filter((p) => typeof p === "string")
+          .join("");
+        if (!norm(u).startsWith(qPrefix)) return null;
+        const text = (m.content?.parts || [])
+          .filter((p) => typeof p === "string")
+          .join("\n")
+          .replace(/\ue200[^\ue201]*\ue201/g, "") // inline citation tokens
+          .trim();
+        if (text) return text;
+      }
+      await sleep(2000);
+    }
+    return null;
   }
 
   // --- DOM → markdown walker (ChatGPT renderer structure, M1-verified) ---
