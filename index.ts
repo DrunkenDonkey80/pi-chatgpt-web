@@ -797,6 +797,7 @@ async function runAsk(
     files?: string[]; // workspace paths to attach (validated + staged)
     signal?: AbortSignal; // abort (ESC) cancels the wait instead of hanging
     url?: string; // fetch modes: target any conversation by URL
+    count?: number | "all"; // fetch-last: how many exchanges to import
   },
 ) {
   if (!(await ensureBridge(ctx, opts?.signal))) {
@@ -832,6 +833,7 @@ async function runAsk(
       workspace: process.cwd(),
       files,
       url: opts?.url,
+      count: opts?.count,
     }),
   );
   // advisor handoff cursor: ChatGPT now has everything up to here — later
@@ -1094,7 +1096,6 @@ export const FETCH_SUM_WORDS = [
   "summarize",
   "summary",
   "handoff",
-  "all",
 ];
 export function parseFetch(a: string): [string, string, string] | null {
   const m = /^(?:https?:\/\/)?chatgpt\.com\/\S+/i.exec(a);
@@ -1103,7 +1104,9 @@ export function parseFetch(a: string): [string, string, string] | null {
   const w = rest ? rest.split(/\s+/)[0].toLowerCase() : "";
   const msg = w ? rest.slice(w.length).trim() : "";
   if (FETCH_SUM_WORDS.includes(w)) return [m[0], w, msg];
-  if (!rest || w === "last") return [m[0], "last", ""];
+  if (w === "all") return [m[0], "all", ""];
+  if (!rest || w === "last")
+    return [m[0], "last", /^\d+$/.test(msg) ? msg : ""];
   // any other text is a follow-up message sent into that conversation
   return [m[0], "ask", rest];
 }
@@ -1209,7 +1212,12 @@ export default function (pi: ExtensionAPI) {
       if (fr) {
         const [url, verb, message] = fr;
         if (verb === "last")
-          return runAsk(pi, ctx, "", "fetch-last", 0, { url });
+          return runAsk(pi, ctx, "", "fetch-last", 0, {
+            url,
+            count: message ? Number(message) : 1,
+          });
+        if (verb === "all")
+          return runAsk(pi, ctx, "", "fetch-last", 0, { url, count: "all" });
         if (verb === "ask")
           return runAsk(pi, ctx, message, "fetch-ask", 0, { url });
         return runAsk(

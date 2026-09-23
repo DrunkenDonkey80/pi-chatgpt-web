@@ -183,6 +183,7 @@ async function handleCommand(cmd) {
           id: cmd.id,
           question: cmd.question || "",
           mode: cmd.mode === "fetch-last" ? "side-last" : "advisor",
+          count: cmd.count,
         },
         ASK_TIMEOUT_MS,
         "chatgpt fetch did not finish in time",

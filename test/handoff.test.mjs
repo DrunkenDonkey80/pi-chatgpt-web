@@ -415,6 +415,12 @@ assert.equal(parseFetch("hello world"), null, "no url -> null");
     ["ask", "get this prompt and make a plan"],
     "message kept intact",
   );
+  const n3 = parseFetch("https://chatgpt.com/c/abc last 3");
+  assert.deepEqual([n3[1], n3[2]], ["last", "3"], "last X");
+  const every = parseFetch("https://chatgpt.com/c/abc ALL");
+  assert.deepEqual([every[1], every[2]], ["all", ""], "all, case-insensitive");
+  const noN = parseFetch("https://chatgpt.com/c/abc last");
+  assert.deepEqual([noN[1], noN[2]], ["last", ""], "bare last");
 }
 {
   const [, v, m] = parseFetch("https://chatgpt.com/c/abc HANDOFF  do it");

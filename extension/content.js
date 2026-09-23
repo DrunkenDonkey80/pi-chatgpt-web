@@ -183,7 +183,7 @@
       return;
     }
     if (msg && msg.type === "ask") {
-      ask(msg.id, msg.question, msg.mode, msg.attachments)
+      ask(msg.id, msg.question, msg.mode, msg.attachments, msg.count)
         .then(sendResponse)
         .catch((e) =>
           sendResponse({
@@ -195,7 +195,7 @@
     }
   });
 
-  async function ask(_id, question, mode, attachments) {
+  async function ask(_id, question, mode, attachments, count) {
     try {
       const q = question;
       if (mode === "side-last") {
@@ -211,17 +211,28 @@
         const asst = document.querySelectorAll(
           '[data-message-author-role="assistant"]',
         );
-        const u = users[users.length - 1];
-        const a = asst[asst.length - 1];
-        if (!a)
+        if (!asst.length)
           throw new Error("no assistant message in the side discussion yet");
-        status("extracted last exchange");
+        // last N exchanges (or the whole thread): pair users/assistants from
+        // the end — normal threads alternate, so position-from-end matches
+        const n =
+          count === "all"
+            ? asst.length
+            : Math.min(Math.max(1, Number(count) || 1), asst.length);
+        const qs = [];
+        const answers = [];
+        for (let k = n; k >= 1; k--) {
+          const u = users[users.length - k];
+          qs.push(u ? (u.innerText || "").trim() : "(no user turn found)");
+          answers.push(domToMarkdown(asst[asst.length - k]));
+        }
+        status(`extracted last exchange${n > 1 ? "s" : ""}`);
         const artifacts = await collectArtifacts(_id, [...asst]);
         return {
           ok: true,
           url: location.href,
-          question: u ? (u.innerText || "").trim() : "(no user turn found)",
-          answer: domToMarkdown(a),
+          question: qs.join("\n\n---\n\n"),
+          answer: answers.join("\n\n---\n\n"),
           artifacts,
         };
       }
