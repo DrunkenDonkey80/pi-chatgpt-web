@@ -4,7 +4,7 @@
 // answer into this session without triggering a model call.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -13,6 +13,122 @@ import { appendOp, pendingOps, markOp, findOp, type Op } from "./state.ts";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SPOOL = path.join(ROOT, "spool");
+
+// self-heal: git checkouts/updates don't preserve the exec bit, but on
+// non-Windows the native-messaging manifest execs native-host/host.js
+// directly (no .bat wrapper) — without +x the browser can't spawn it and
+// the bridge silently never comes up (no heartbeat.json, ever).
+if (process.platform !== "win32") {
+  try {
+    fs.chmodSync(path.join(ROOT, "native-host", "host.js"), 0o755);
+  } catch {
+    // best-effort self-heal: read-only checkout / missing file is non-fatal
+  }
+}
+// Find browser profiles where this extension is actually installed. Native
+// host registration supports those profiles; browser selection remains the
+// operating system's job.
+export function browserRootsWithExtension(
+  configHome: string,
+  extensionId: string,
+): string[] {
+  const roots: string[] = [];
+  const visit = (dir: string, depth: number) => {
+    if (fs.existsSync(path.join(dir, "Local State"))) {
+      try {
+        const installed = fs.readdirSync(dir, { withFileTypes: true }).some(
+          (entry) =>
+            entry.isDirectory() &&
+            ["Preferences", "Secure Preferences"].some((name) => {
+              try {
+                return fs
+                  .readFileSync(path.join(dir, entry.name, name), "utf8")
+                  .includes(extensionId);
+              } catch {
+                return false;
+              }
+            }),
+        );
+        if (installed) roots.push(dir);
+      } catch {}
+      return;
+    }
+    if (!depth) return;
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true }))
+        if (entry.isDirectory()) visit(path.join(dir, entry.name), depth - 1);
+    } catch {}
+  };
+  visit(configHome, 2);
+  return roots;
+}
+
+export function selectDefaultBrowserRoot(
+  roots: string[],
+  desktopFile: string,
+): string | null {
+  if (roots.length === 1) return roots[0];
+  const ignored = new Set(["browser", "desktop", "stable", "beta", "dev"]);
+  const tokens = desktopFile
+    .toLowerCase()
+    .replace(/\.desktop$/, "")
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 2 && !ignored.has(token));
+  const scored = roots.map((root) => ({
+    root,
+    score: tokens.filter((token) => root.toLowerCase().includes(token)).length,
+  }));
+  const best = Math.max(0, ...scored.map(({ score }) => score));
+  const matches = scored.filter(({ score }) => score === best && score > 0);
+  return matches.length === 1 ? matches[0].root : null;
+}
+
+if (process.platform === "linux") {
+  try {
+    const src = JSON.parse(
+      fs.readFileSync(
+        path.join(ROOT, "native-host", "com.flex.pichatgptprobe.json"),
+        "utf8",
+      ),
+    );
+    const extensionId = String(src.allowed_origins?.[0] ?? "").match(
+      /^chrome-extension:\/\/([a-p]{32})\/$/,
+    )?.[1];
+    if (!extensionId) throw new Error("native host has no extension id");
+    const body =
+      JSON.stringify(
+        { ...src, path: path.join(ROOT, "native-host", "host.js") },
+        null,
+        2,
+      ) + "\n";
+    const configHome =
+      process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+    const roots = browserRootsWithExtension(configHome, extensionId);
+    const desktopFile = execFileSync(
+      "xdg-settings",
+      ["get", "default-web-browser"],
+      { encoding: "utf8" },
+    ).trim();
+    const selected = selectDefaultBrowserRoot(roots, desktopFile);
+    if (!selected) throw new Error("could not identify the default browser profile");
+    for (const dir of roots) {
+      const f = path.join(dir, "NativeMessagingHosts", `${src.name}.json`);
+      if (dir !== selected) {
+        fs.rmSync(f, { force: true });
+        continue;
+      }
+      let cur = "";
+      try {
+        cur = fs.readFileSync(f, "utf8");
+      } catch {}
+      if (cur === body) continue;
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, body);
+    }
+  } catch {
+    // best-effort: no xdg-settings / unreadable profiles — setup stays manual
+  }
+}
 const RESULT_TIMEOUT_MS = 21 * 60 * 1000; // thinking models: 180s start + 900s generation + settle
 const HEARTBEAT_STALE_MS = 15_000;
 
@@ -45,6 +161,7 @@ const CFG_DEFAULTS: Cfg = {
 function loadCfg(): Cfg {
   const c = { ...CFG_DEFAULTS, ...(readJson(SETTINGS) ?? {}) } as Cfg;
   delete (c as any).advisorSentUpTo; // legacy global cursor — meaningless per-project
+  delete (c as any).browser; // legacy forced-browser setting
   c.advisors ??= {};
   return c;
 }
@@ -520,6 +637,57 @@ function readJson(file: string): any {
   }
 }
 
+// last failure reason, so machine callers (chatgpt_consult) see WHY instead
+// of "check the notifications"
+let lastError = "";
+function fail(ctx: any, msg: string) {
+  lastError = msg;
+  ctx.ui.notify(msg, "error");
+}
+
+// browser closed = bridge down: open ChatGPT through the operating system's
+// default URL handler. The extension connects and the host resumes the spool.
+export function defaultBrowserCommand(platform = process.platform): {
+  command: string;
+  args: string[];
+} {
+  const url = "https://chatgpt.com/";
+  if (platform === "win32")
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/c", "start", "", url],
+    };
+  if (platform === "darwin") return { command: "open", args: [url] };
+  return { command: "xdg-open", args: [url] };
+}
+
+let launchedAt = 0;
+function launchBrowser(ctx: any) {
+  if (Date.now() - launchedAt < 60_000) return; // one attempt per minute
+  launchedAt = Date.now();
+  const { command, args } = defaultBrowserCommand();
+  try {
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    child.on("error", (e) =>
+      fail(ctx, `could not open the default browser: ${e.message}`),
+    );
+    child.unref();
+    ctx.ui.notify("bridge down, opening the default browser...", "info");
+  } catch (e: any) {
+    fail(ctx, `could not open the default browser: ${e?.message ?? e}`);
+  }
+}
+
+async function ensureBridge(ctx: any, signal?: AbortSignal) {
+  if (bridgeStatus().up) return true;
+  launchBrowser(ctx);
+  for (let t0 = Date.now(); Date.now() - t0 < 45_000 && !signal?.aborted; ) {
+    await sleep(1000);
+    if (bridgeStatus().up) return true;
+  }
+  return false;
+}
+
 function bridgeStatus(): { up: boolean; age: number | null; detail: string } {
   const hb = readJson(path.join(SPOOL, "heartbeat.json"));
   if (!hb || typeof hb.ts !== "number")
@@ -579,7 +747,7 @@ function showStatus(ctx: any) {
     `bridge: ${st.up ? "UP" : "DOWN"} (${st.detail})`,
     st.up
       ? ""
-      : "fix: is Helium running with the pi-chatgpt-web bridge extension enabled?",
+      : "fix: is the default browser running with the pi-chatgpt-web bridge extension enabled?",
     ...pending.map(
       (o) =>
         `pending: [${o.id.slice(0, 8)}] ${o.status} — ${o.question.slice(0, 60)}`,
@@ -629,11 +797,10 @@ async function runAsk(
     url?: string; // fetch modes: target any conversation by URL
   },
 ) {
-  const st = bridgeStatus();
-  if (!st.up) {
-    ctx.ui.notify(
-      `bridge down (${st.detail}). Is Helium running with the bridge extension enabled? Extension moved (new ID)? re-run native-host/regcheck.js`,
-      "error",
+  if (!(await ensureBridge(ctx, opts?.signal))) {
+    fail(
+      ctx,
+      `bridge down (${bridgeStatus().detail}) even after opening the default browser. Is the pi-chatgpt-web bridge extension installed and enabled there?`,
     );
     return;
   }
@@ -740,18 +907,20 @@ async function runAsk(
         }
       } else {
         markOp(op.id, { status: "failed", error: m.error });
-        ctx.ui.notify(`ChatGPT consultation failed: ${m.error}`, "error");
+        fail(ctx, `ChatGPT consultation failed: ${m.error}`);
       }
       return;
     }
     if (Date.now() - t0 > RESULT_TIMEOUT_MS) {
       markOp(op.id, { status: "needs-attention" });
-      ctx.ui.notify(
+      fail(
+        ctx,
         "timed out waiting for ChatGPT. The tab may still be mid-generation; check the advisor tab, then /chatgpt recover.",
-        "error",
       );
       return;
     }
+    // browser closed mid-ask: relaunch; the host replays the kept command file
+    if (!bridgeStatus().up) launchBrowser(ctx);
     if (opts?.signal?.aborted) {
       markOp(op.id, { status: "failed", error: "aborted" });
       ctx.ui.notify("consult aborted — waiting cancelled", "info");
@@ -982,6 +1151,7 @@ export default function (pi: ExtensionAPI) {
           { type: "text", text: "asking ChatGPT — this can take a while" },
         ],
       });
+      lastError = "";
       const r = await runAsk(
         pi,
         ctx,
@@ -999,7 +1169,7 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: "ChatGPT consultation failed — check the session notifications for details.",
+              text: `ChatGPT consultation failed — ${lastError || "check the session notifications for details."}`,
             },
           ],
           details: {},

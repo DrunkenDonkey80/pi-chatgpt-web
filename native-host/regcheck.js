@@ -1,5 +1,5 @@
-// Query/fix the native-messaging host registry entries (both Chromium and
-// Chrome roots, as read from Helium's chrome.dll). Safe to re-run anytime.
+// Query/fix native-messaging host registry entries for compatible browsers.
+// Safe to re-run anytime; runtime browser selection stays with the OS default.
 // `node regcheck.js --remove` deletes the entries (full disable; the host
 // manifest and files stay on disk).
 const { execFileSync } = require("child_process");

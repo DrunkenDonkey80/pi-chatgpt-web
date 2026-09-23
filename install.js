@@ -27,74 +27,78 @@ const PEM = path.join(ROOT, "extension.pem");
 const browserArg = process.argv.includes("--browser")
   ? process.argv[process.argv.indexOf("--browser") + 1]
   : undefined;
-const browserCandidates = [
-  browserArg,
-  process.env.PI_CHATGPT_BROWSER,
-  process.env.LOCALAPPDATA &&
-    path.join(
-      process.env.LOCALAPPDATA,
-      "imput",
-      "Helium",
-      "Application",
-      "chrome.exe",
-    ),
-  process.env.LOCALAPPDATA &&
-    path.join(
-      process.env.LOCALAPPDATA,
-      "Google",
-      "Chrome",
-      "Application",
-      "chrome.exe",
-    ),
-  process.env.LOCALAPPDATA &&
-    path.join(
-      process.env.LOCALAPPDATA,
-      "Chromium",
-      "Application",
-      "chrome.exe",
-    ),
-  process.env.LOCALAPPDATA &&
-    path.join(
-      process.env.LOCALAPPDATA,
-      "Microsoft",
-      "Edge",
-      "Application",
-      "msedge.exe",
-    ),
-  process.env.PROGRAMFILES &&
-    path.join(
-      process.env.PROGRAMFILES,
-      "Google",
-      "Chrome",
-      "Application",
-      "chrome.exe",
-    ),
-  process.env.PROGRAMFILES &&
-    path.join(
-      process.env.PROGRAMFILES,
-      "Microsoft",
-      "Edge",
-      "Application",
-      "msedge.exe",
-    ),
-  process.env["PROGRAMFILES(X86)"] &&
-    path.join(
-      process.env["PROGRAMFILES(X86)"],
-      "Google",
-      "Chrome",
-      "Application",
-      "chrome.exe",
-    ),
-  process.env["PROGRAMFILES(X86)"] &&
-    path.join(
-      process.env["PROGRAMFILES(X86)"],
-      "Microsoft",
-      "Edge",
-      "Application",
-      "msedge.exe",
-    ),
-].filter(Boolean);
-const BROWSER = browserCandidates.find(fs.existsSync);
+
+function commandExecutable(command) {
+  const match = String(command).match(/^\s*(?:"([^"]+)"|(\S+))/);
+  return match?.[1] || match?.[2] || "";
+}
+
+function desktopExecutable(command) {
+  const parts = String(command)
+    .match(/"[^"]*"|'[^']*'|\S+/g)
+    ?.map((part) => part.replace(/^(?:"([^"]*)"|'([^']*)')$/, "$1$2"));
+  if (!parts?.length) return "";
+  if (path.basename(parts[0]) === "env") {
+    parts.shift();
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(parts[0] || "")) parts.shift();
+  }
+  return parts[0] || "";
+}
+
+function defaultBrowserExecutable() {
+  try {
+    if (process.platform === "win32") {
+      const key =
+        "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\" +
+        "UrlAssociations\\https\\UserChoice";
+      const selected = execFileSync("reg", ["query", key, "/v", "ProgId"], {
+        encoding: "utf8",
+      });
+      const progId = ((selected.match(/REG_SZ\s+(.*)/) || [])[1] || "").trim();
+      if (!progId) return "";
+      const open = execFileSync(
+        "reg",
+        ["query", `HKCR\\${progId}\\shell\\open\\command`, "/ve"],
+        { encoding: "utf8" },
+      );
+      return commandExecutable(
+        ((open.match(/REG_SZ\s+(.*)/) || [])[1] || "").trim(),
+      );
+    }
+    if (process.platform === "linux") {
+      const desktop = execFileSync(
+        "xdg-settings",
+        ["get", "default-web-browser"],
+        { encoding: "utf8" },
+      ).trim();
+      const dataDirs = [
+        process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"),
+        ...(process.env.XDG_DATA_DIRS || "/usr/local/share:/usr/share").split(
+          path.delimiter,
+        ),
+      ];
+      for (const dir of dataDirs) {
+        const file = path.join(dir, "applications", desktop);
+        if (!fs.existsSync(file)) continue;
+        const exec = fs
+          .readFileSync(file, "utf8")
+          .split(/\r?\n/)
+          .find((line) => line.startsWith("Exec="))
+          ?.slice(5);
+        const command = desktopExecutable(exec);
+        if (!command) return "";
+        if (path.isAbsolute(command)) return command;
+        return execFileSync("which", [command], { encoding: "utf8" }).trim();
+      }
+    }
+  } catch {}
+  return "";
+}
+
+const BROWSER =
+  [browserArg, process.env.PI_CHATGPT_BROWSER, defaultBrowserExecutable()]
+    .filter(Boolean)
+    .find(fs.existsSync) || "";
 const HOST_MANIFEST = path.join(
   ROOT,
   "native-host",
@@ -166,7 +170,7 @@ if (
   }
   if (process.argv.includes("--policy"))
     console.log(
-      "\nNow: start `node serve-update.js`, then fully restart Helium.\n" +
+      "\nNow: start `node serve-update.js`, then fully restart the default browser.\n" +
         "The extension installs as forced (no developer mode). The server only needs to run when\n" +
         "the browser starts and the extension is missing or needs an update.",
     );
@@ -205,12 +209,12 @@ if (process.argv.includes("--id")) {
 
 if (!BROWSER) {
   throw new Error(
-    "browser not found; pass --browser <path> or set PI_CHATGPT_BROWSER",
+    "default browser is not a Chromium-compatible packer; pass --browser <path> only for packaging",
   );
 }
 
 // 1. pack (headless chrome packs and exits 0; first run also creates the key)
-const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), "helium-pack-"));
+const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), "browser-pack-"));
 try {
   const args = [
     "--headless=new",
@@ -360,6 +364,6 @@ execFileSync(
 );
 
 console.log(
-  "\nNext: fully quit the browser (tray icon too) and relaunch, then check chrome://extensions.\n" +
+  "\nNext: fully quit the default browser (tray icon too) and relaunch, then check chrome://extensions.\n" +
     "Remove the old unpacked copy if it is still listed. After any manifest change: node install.js again.",
 );
