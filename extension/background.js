@@ -73,6 +73,12 @@ function post(msg) {
   }
 }
 
+// content scripts stream artifact chunks through us to the native host.
+// Sync handler keeps chunk ordering intact.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "put-file") post(msg);
+});
+
 function onPortMessage(msg) {
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "ping") {

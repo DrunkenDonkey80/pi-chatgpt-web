@@ -22,6 +22,7 @@ const {
   buildHandoff,
   stageAttachments,
   parseFetch,
+  linkArtifacts,
 } = await import("../index.ts");
 
 // --- needRequest -----------------------------------------------------------
@@ -345,7 +346,7 @@ assert.equal(parseFetch("hello world"), null, "no url -> null");
   );
 }
 {
-  const [u, v, m] = parseFetch(
+  const [, v, m] = parseFetch(
     "https://chatgpt.com/c/abc sum fix the parser now",
   );
   assert.deepEqual([v, m], ["sum", "fix the parser now"], "sum + message");
@@ -359,5 +360,33 @@ assert.equal(parseFetch("hello world"), null, "no url -> null");
   assert.deepEqual([v, m], ["handoff", "do it"], "case-insensitive verb");
 }
 assert.ok(parseFetch("chatgpt.com/c/abc last"), "bare domain accepted");
+
+// --- linkArtifacts: copy staged files, dedupe, link ------------------------
+{
+  const SPOOL = path.resolve(
+    fileURLToPath(import.meta.url),
+    "..",
+    "..",
+    "spool",
+  );
+  fs.mkdirSync(path.join(SPOOL, "artifacts-t1"), { recursive: true });
+  fs.writeFileSync(path.join(SPOOL, "artifacts-t1", "img.png"), "PNGDATA");
+  const a1 = linkArtifacts("ans", "t1", [{ name: "img.png" }]);
+  assert.ok(a1.includes("[img.png](docs/chatgpt/img.png)"), "link appended");
+  assert.ok(
+    fs.existsSync(path.join(tmp, "docs", "chatgpt", "img.png")),
+    "copied into workspace docs",
+  );
+  const a2 = linkArtifacts("ans2", "t1", [{ name: "img.png" }]);
+  assert.ok(a2.includes("img-2.png"), "dedupe on repeat import");
+  const a3 = linkArtifacts("ans3", "nope", [{ name: "x.png" }]);
+  assert.ok(a3.includes("failed"), "missing source noted, not fatal");
+  assert.ok(
+    !fs.existsSync(path.join(tmp, "docs", "chatgpt", "x.png")),
+    "failed copy leaves nothing",
+  );
+  fs.rmSync(path.join(tmp, "docs"), { recursive: true, force: true });
+  fs.rmSync(path.join(SPOOL, "artifacts-t1"), { recursive: true, force: true });
+}
 
 console.log("handoff + NEED self-check: all assertions passed");

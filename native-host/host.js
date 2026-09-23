@@ -98,6 +98,28 @@ function onMessage(msg) {
       });
     }
   }
+  // artifact uploads: content scripts stream 512KB base64 chunks; the
+  // assembled files land in spool/artifacts-<id>/ for pi to pick up
+  if (
+    msg.type === "put-file" &&
+    msg.id &&
+    typeof msg.name === "string" &&
+    Number.isInteger(msg.offset)
+  ) {
+    const file = path.join(
+      SPOOL,
+      `artifacts-${msg.id}`,
+      path.basename(msg.name),
+    );
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const buf = Buffer.from(msg.data || "", "base64");
+      if (msg.offset === 0) fs.writeFileSync(file, buf);
+      else fs.appendFileSync(file, buf);
+    } catch {
+      // fire-and-forget: pi reports a failed link if the file is unusable
+    }
+  }
 }
 
 // --- duties ---

@@ -131,7 +131,9 @@ importing anything into your session transcript:
   project's conversation, `NEED:` file requests are answered automatically (≤2 rounds), and the
   final answer is returned to the calling agent only. `files` (optional) attaches up to 3
   workspace files (2MB total) — staged into the spool, pulled by the extension, and attached
-  for real in the composer (images, PDFs, text).
+  for real in the composer (images, PDFs, text). Images ChatGPT generates in answers are
+  streamed back the same way, saved under `docs/chatgpt/` in the project, and linked from
+  the imported/returned answer.
 - **Direct call**: extension code can import this module and call
   `askChatGPT(pi, ctx, question, "advisor" | "temp", files?)` → `{answer, url}` — same flow, no
   transcript import.

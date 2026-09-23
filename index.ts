@@ -270,7 +270,7 @@ export function stageAttachments(
     );
   try {
     for (const d of fs.readdirSync(SPOOL)) {
-      if (!d.startsWith("attach-")) continue;
+      if (!/^(attach|artifacts)-/.test(d)) continue;
       const p = path.join(SPOOL, d);
       if (Date.now() - fs.statSync(p).mtimeMs > 30 * 60_000)
         fs.rmSync(p, { recursive: true, force: true });
@@ -299,6 +299,43 @@ export function stageAttachments(
     out.push({ name, type: ATTACH_MIME[ext] ?? "application/octet-stream" });
   }
   return out;
+}
+
+// copy staged artifacts (spool/artifacts-<opId>/) into the project's
+// docs/chatgpt/ and append markdown links to the answer
+export function linkArtifacts(
+  answer: string,
+  opId: string,
+  artifacts: { name: string; type?: string }[],
+): string {
+  if (!Array.isArray(artifacts) || !artifacts.length) return answer;
+  const dir = path.join(CWD, "docs", "chatgpt");
+  const src = path.join(SPOOL, `artifacts-${opId}`);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    return answer;
+  }
+  const links: string[] = [];
+  for (const a of artifacts) {
+    const name = path.basename(String(a?.name || ""));
+    if (!/^[\w .+()-]+$/.test(name)) continue;
+    let dest = path.join(dir, name);
+    let i = 2;
+    while (fs.existsSync(dest)) {
+      const ext = path.extname(name);
+      const stem = name.slice(0, name.length - ext.length);
+      dest = path.join(dir, `${stem}-${i}${ext}`);
+      i++;
+    }
+    try {
+      fs.copyFileSync(path.join(src, name), dest);
+      links.push(`[${name}](docs/chatgpt/${path.basename(dest)})`);
+    } catch (e: any) {
+      links.push(`(${name} failed: ${e?.message || e})`);
+    }
+  }
+  return links.length ? `${answer}\n\n${links.join("\n")}` : answer;
 }
 
 // handoff: prepend recent session transcript so the question isn't out of the blue.
@@ -693,8 +730,12 @@ async function runAsk(
             url: m.url,
             answerChars: (m.answer || "").length,
           });
-          if (opts?.returnOnly) return { answer: m.answer, url: m.url };
-          importConsultation(pi, op, m.answer, m.url);
+          const answer =
+            Array.isArray(m.artifacts) && m.artifacts.length
+              ? linkArtifacts(m.answer || "", op.id, m.artifacts)
+              : m.answer || "";
+          if (opts?.returnOnly) return { answer, url: m.url };
+          importConsultation(pi, op, answer, m.url);
           ctx.ui.notify(`imported ChatGPT answer (${m.url})`, "info");
         }
       } else {
