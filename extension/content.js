@@ -44,8 +44,8 @@
       s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
     return btoa(s);
   };
-  // ponytail: scans every turn passed in — old images re-upload per consult
-  // (capped at 5, name-deduped on import) so earlier file links stay listed
+  // ponytail: scans only the turns passed in — callers scope them (last-N or
+  // since-our-send); files collect newest-first so a regenerated name wins
   async function collectArtifacts(id, assistantEls) {
     const list = (Array.isArray(assistantEls) ? assistantEls : [assistantEls])
       .filter(Boolean);
@@ -57,24 +57,9 @@
       seen.add(name);
       candidates.push({ name, src });
     };
-    // generated images (skip avatars/thumbnails via the size floor)
-    let n = 0;
-    for (const el of list) {
-      for (const im of el.querySelectorAll("img")) {
-      const s = im.currentSrc || im.src || "";
-      if (
-        s &&
-        (s.startsWith("blob:") || s.includes("oaiusercontent.com")) &&
-        (im.naturalWidth || im.width || 0) >= 200
-      ) {
-        n++;
-        const m = /([A-Za-z0-9._-]{3,60}\.(?:png|jpe?g|webp|gif))/.exec(s);
-        push(m ? m[1] : `image-${n}.png`, s);
-      }
-      }
-    }
-    // downloadable files: name from the link text, else the URL path
-    for (const el of list) {
+    // downloadable files first, newest turn first: with 50 tries of the same
+    // doc, the final version wins the name and the 5-file cap
+    for (const el of [...list].reverse()) {
       for (const a of el.querySelectorAll("a[href]")) {
         const href = a.href || "";
         if (!DL_HREF_RE.test(href)) continue;
@@ -83,6 +68,23 @@
           FILE_NAME_RE.exec(label) ||
           FILE_NAME_RE.exec(decodeURIComponent(href.split("?")[0]));
         if (m) push(m[0], href);
+      }
+    }
+    // generated images after files (skip avatars/thumbnails via the size
+    // floor); oldest-first keeps the numbering stable across consults
+    let n = 0;
+    for (const el of list) {
+      for (const im of el.querySelectorAll("img")) {
+        const s = im.currentSrc || im.src || "";
+        if (
+          s &&
+          (s.startsWith("blob:") || s.includes("oaiusercontent.com")) &&
+          (im.naturalWidth || im.width || 0) >= 200
+        ) {
+          n++;
+          const m = /([A-Za-z0-9._-]{3,60}\.(?:png|jpe?g|webp|gif))/.exec(s);
+          push(m ? m[1] : `image-${n}.png`, s);
+        }
       }
     }
     const out = [];
@@ -129,7 +131,7 @@
     // ponytail: chips ↔ code nodes matched by order; a thread mixing several
     // canvases could attach one body to the wrong name — rename by hand then.
     const carded = [];
-    for (const el of list) {
+    for (const el of [...list].reverse()) {
       for (const a of el.querySelectorAll("a[href]")) {
         const label = (a.textContent || "").trim();
         const m = label && FILE_NAME_RE.exec(label);
@@ -162,7 +164,7 @@
           }
         }
         for (let i = 0; i < carded.length && out.length < MAX_ARTIFACTS; i++) {
-          const body = docs[i]?.text || "";
+          const body = docs[docs.length - 1 - i]?.text || "";
           if (!body) continue;
           const buf = new TextEncoder().encode(body);
           if (total + buf.length > MAX_ARTIFACT_BYTES) break;
@@ -227,7 +229,7 @@
           answers.push(domToMarkdown(asst[asst.length - k]));
         }
         status(`extracted last exchange${n > 1 ? "s" : ""}`);
-        const artifacts = await collectArtifacts(_id, [...asst]);
+        const artifacts = await collectArtifacts(_id, [...asst].slice(-n));
         return {
           ok: true,
           url: location.href,
@@ -428,7 +430,7 @@
         const els = document.querySelectorAll(
           '[data-message-author-role="assistant"]',
         );
-        const artifacts = await collectArtifacts(_id, [...els]);
+        const artifacts = await collectArtifacts(_id, [...els].slice(prevCount));
         status("done");
         return {
           ok: true,
@@ -459,7 +461,7 @@
       const el = els[els.length - 1];
       if (!el) throw new Error("no assistant message to extract");
       const answer = domToMarkdown(el);
-      const artifacts = await collectArtifacts(_id, [...els]);
+      const artifacts = await collectArtifacts(_id, [...els].slice(prevCount));
       status("done");
       return { ok: true, url: location.href, question: q, answer, artifacts };
     } finally {
