@@ -404,28 +404,32 @@
       while (document.querySelector(stopSel) && Date.now() - t0 < 900000)
         await sleep(500);
 
-      // completion gate: ChatGPT shows the copy action under the last message
-      // only when it has fully rendered — the stop button can vanish while
-      // text is still streaming in, which truncated answers mid-sentence.
-      const copySel =
-        'button[data-testid="copy-turn-button"], button[aria-label="Copy"]';
-      status("waiting for the full answer…");
-      t0 = Date.now();
-      while (Date.now() - t0 < 900000) {
-        const asst = document.querySelectorAll(
-          '[data-message-author-role="assistant"]',
-        );
-        if (asst.length && asst[asst.length - 1].querySelector(copySel)) break;
-        await sleep(500);
+      // authoritative completion: the conversation API reports
+      // finished_successfully — render-independent, works in background tabs.
+      // Temp chats have no retrievable id, so they fall to the DOM gates.
+      let apiText = null;
+      if (mode !== "temp") {
+        status("fetching final answer…");
+        apiText = await apiAnswer(qPrefix, 900000).catch(() => null);
       }
-
-      // background tabs don't render: the DOM can freeze mid-stream and look
-      // "stable" while truncated. The conversation API is render-independent.
-      status("fetching final answer…");
-      const apiText =
-        mode === "temp"
-          ? null // temp chats have no /c/<uuid> — don't burn the 30s id wait
-          : await apiAnswer(qPrefix, 900000).catch(() => null);
+      if (!apiText) {
+        // DOM fallback: the copy action under the last message appears only
+        // when it fully rendered — but selectors drift (localized aria-labels,
+        // changed testids), so cap this at 120s and let the stability loop
+        // have the final word instead of hanging for minutes.
+        const copySel =
+          'button[data-testid="copy-turn-button"], button[aria-label="Copy"]';
+        status("waiting for the full answer…");
+        t0 = Date.now();
+        while (Date.now() - t0 < 120000) {
+          const asst = document.querySelectorAll(
+            '[data-message-author-role="assistant"]',
+          );
+          if (asst.length && asst[asst.length - 1].querySelector(copySel))
+            break;
+          await sleep(500);
+        }
+      }
       if (apiText) {
         const els = document.querySelectorAll(
           '[data-message-author-role="assistant"]',
