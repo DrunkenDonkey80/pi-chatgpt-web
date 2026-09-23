@@ -26,11 +26,15 @@
     setTimeout(() => c && c.remove(), 10000);
   };
 
-  // ---- artifact extraction: fetch ChatGPT-generated images and stream them
+  // ---- artifact extraction: fetch ChatGPT-generated images AND
+  // downloadable files (.md/.json/code-interpreter results) and stream them
   // to the native host in 512KB base64 chunks; the result carries only a
   // manifest — file bytes never ride inside the result JSON
   const MAX_ARTIFACTS = 5;
   const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
+  const FILE_NAME_RE = /[\w .+()-]{1,60}\.[A-Za-z0-9]{1,8}/;
+  const DL_HREF_RE =
+    /(oaiusercontent\.com|\/download|backend-api\/files|^blob:)/i;
   const b64 = (u8) => {
     let s = "";
     for (let i = 0; i < u8.length; i += 8192)
@@ -39,42 +43,57 @@
   };
   async function collectArtifacts(id, assistantEl) {
     if (!assistantEl) return [];
-    const imgs = [...assistantEl.querySelectorAll("img")]
-      .filter((im) => {
-        const s = im.currentSrc || im.src || "";
-        return (
-          s &&
-          (s.startsWith("blob:") || s.includes("oaiusercontent.com")) &&
-          (im.naturalWidth || im.width || 0) >= 200
-        );
-      })
-      .slice(0, MAX_ARTIFACTS);
+    const candidates = [];
+    const seen = new Set();
+    const push = (name, src) => {
+      if (!name || seen.has(name)) return;
+      seen.add(name);
+      candidates.push({ name, src });
+    };
+    // generated images (skip avatars/thumbnails via the size floor)
+    let n = 0;
+    for (const im of assistantEl.querySelectorAll("img")) {
+      const s = im.currentSrc || im.src || "";
+      if (
+        s &&
+        (s.startsWith("blob:") || s.includes("oaiusercontent.com")) &&
+        (im.naturalWidth || im.width || 0) >= 200
+      ) {
+        n++;
+        const m = /([A-Za-z0-9._-]{3,60}\.(?:png|jpe?g|webp|gif))/.exec(s);
+        push(m ? m[1] : `image-${n}.png`, s);
+      }
+    }
+    // downloadable files: name from the link text, else the URL path
+    for (const a of assistantEl.querySelectorAll("a[href]")) {
+      const href = a.href || "";
+      if (!DL_HREF_RE.test(href)) continue;
+      const label = (a.textContent || "").trim();
+      const m =
+        FILE_NAME_RE.exec(label) ||
+        FILE_NAME_RE.exec(decodeURIComponent(href.split("?")[0]));
+      if (m) push(m[0], href);
+    }
     const out = [];
     let total = 0;
-    for (let i = 0; i < imgs.length; i++) {
-      const src = imgs[i].currentSrc || imgs[i].src;
+    for (let i = 0; i < candidates.length && out.length < MAX_ARTIFACTS; i++) {
+      const c = candidates[i];
       let blob;
       try {
-        const r = await fetch(src, { credentials: "include" });
+        const r = await fetch(c.src, { credentials: "include" });
         if (!r.ok) continue;
         blob = await r.blob();
       } catch {
         continue;
       }
       if (total + blob.size > MAX_ARTIFACT_BYTES) break;
-      const type = blob.type || "image/png";
-      let name = `image-${i + 1}.${type.includes("jpeg") ? "jpg" : type.split("/")[1] || "png"}`;
-      const m = /([A-Za-z0-9._-]{3,60}\.(?:png|jpe?g|webp|gif|csv|json|zip|txt))/.exec(
-        src,
-      );
-      if (m) name = m[1];
       const buf = new Uint8Array(await blob.arrayBuffer());
       for (let off = 0; off < Math.max(buf.length, 1); off += 512 * 1024) {
         try {
           await chrome.runtime.sendMessage({
             type: "put-file",
             id,
-            name,
+            name: c.name,
             offset: off,
             data: b64(buf.subarray(off, off + 512 * 1024)),
           });
@@ -83,7 +102,11 @@
         }
       }
       total += buf.length;
-      out.push({ name, type, bytes: buf.length });
+      out.push({
+        name: c.name,
+        type: blob.type || "application/octet-stream",
+        bytes: buf.length,
+      });
     }
     return out;
   }
