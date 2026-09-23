@@ -21,6 +21,7 @@ const {
   budgetPairs,
   buildHandoff,
   stageAttachments,
+  parseFetch,
 } = await import("../index.ts");
 
 // --- needRequest -----------------------------------------------------------
@@ -279,7 +280,12 @@ clearCfg();
 
 // --- consult attachments (stageAttachments) -----------------------------
 {
-  const SPOOL = path.resolve(fileURLToPath(import.meta.url), "..", "..", "spool");
+  const SPOOL = path.resolve(
+    fileURLToPath(import.meta.url),
+    "..",
+    "..",
+    "spool",
+  );
   const mk = (n, size) => {
     fs.writeFileSync(path.join(tmp, n), Buffer.alloc(size, 7));
     return n;
@@ -305,11 +311,53 @@ clearCfg();
   mk("4.txt", 10);
   mk("big.bin", 2 * 1024 * 1024 + 1);
   let threw = 0;
-  try { stageAttachments(["1.txt", "2.txt", "3.txt", "4.txt"], "x"); } catch { threw++; }
-  try { stageAttachments(["big.bin"], "x"); } catch { threw++; }
-  try { stageAttachments(["../../outside.txt"], "x"); } catch { threw++; }
-  try { stageAttachments(["nope.txt"], "x"); } catch { threw++; }
+  try {
+    stageAttachments(["1.txt", "2.txt", "3.txt", "4.txt"], "x");
+  } catch {
+    threw++;
+  }
+  try {
+    stageAttachments(["big.bin"], "x");
+  } catch {
+    threw++;
+  }
+  try {
+    stageAttachments(["../../outside.txt"], "x");
+  } catch {
+    threw++;
+  }
+  try {
+    stageAttachments(["nope.txt"], "x");
+  } catch {
+    threw++;
+  }
   assert.equal(threw, 4, "count/size/sandbox/missing all refused");
 }
+
+// --- parseFetch: /chatgpt <url> verb parsing -------------------------------
+assert.equal(parseFetch("hello world"), null, "no url -> null");
+{
+  const [u, v, m] = parseFetch("https://chatgpt.com/c/abc last");
+  assert.deepEqual(
+    [u, v, m],
+    ["https://chatgpt.com/c/abc", "last", ""],
+    "bare last",
+  );
+}
+{
+  const [u, v, m] = parseFetch(
+    "https://chatgpt.com/c/abc sum fix the parser now",
+  );
+  assert.deepEqual([v, m], ["sum", "fix the parser now"], "sum + message");
+}
+{
+  const [, v, m] = parseFetch("https://chatgpt.com/c/abc whatever else");
+  assert.deepEqual([v, m], ["last", "else"], "unknown verb -> last");
+}
+{
+  const [, v, m] = parseFetch("https://chatgpt.com/c/abc HANDOFF  do it");
+  assert.deepEqual([v, m], ["handoff", "do it"], "case-insensitive verb");
+}
+assert.ok(parseFetch("chatgpt.com/c/abc last"), "bare domain accepted");
 
 console.log("handoff + NEED self-check: all assertions passed");

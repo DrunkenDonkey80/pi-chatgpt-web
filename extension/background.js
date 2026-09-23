@@ -164,6 +164,21 @@ async function handleCommand(cmd) {
       await sideCommand(cmd);
       return;
     }
+    if (cmd.mode === "fetch-last" || cmd.mode === "fetch-ask") {
+      const tab = await getTabForUrl(cmd.url);
+      const res = await withTimeout(
+        chrome.tabs.sendMessage(tab.id, {
+          type: "ask",
+          id: cmd.id,
+          question: cmd.question || "",
+          mode: cmd.mode === "fetch-last" ? "side-last" : "advisor",
+        }),
+        ASK_TIMEOUT_MS,
+        "chatgpt fetch did not finish in time",
+      );
+      sendResult({ id: cmd.id, ...res, mode: cmd.mode });
+      return;
+    }
     const workspace = cmd.workspace || "default";
     const { tab, fresh } = await getAdvisorTab(workspace);
     let question = cmd.question;
@@ -215,14 +230,12 @@ function withTimeout(p, ms, what) {
 // --- advisor tab lifecycle ---
 // One dedicated tab + conversation URL per project workspace; keyed by the
 // workspace dir pi sent with the command.
-async function getAdvisorTab(workspace) {
-  const { advisors = {} } = await chrome.storage.local.get("advisors");
-  const rec = advisors[workspace];
-  // the saved conversation URL is the durable link: reuse ANY tab already
-  // on that conversation — whatever tab is active, whichever window it is
-  // in. Never match by tab id alone: tabs drift to other chats.
-  if (rec?.url?.includes("/c/")) {
-    const path = rec.url.slice("https://chatgpt.com".length);
+// find (or open) the tab for a conversation URL — reuse any live tab on it
+// (whatever is active, whichever window), refreshing if its content script
+// is stale (pre-extension-reload orphan)
+async function getTabForUrl(url) {
+  if (url.includes("/c/")) {
+    const path = url.slice("https://chatgpt.com".length);
     const found = (
       await chrome.tabs.query({ url: `*://chatgpt.com${path}*` })
     )[0];
@@ -230,22 +243,31 @@ async function getAdvisorTab(workspace) {
       try {
         await waitForContent(found.id, 0); // already has a live content script
       } catch {
-        // stale/orphaned content script (e.g. tab predates an extension
-        // reload): refresh — same conversation URL reloads, new script injects
+        // stale/orphaned content script: refresh — same conversation URL
+        // reloads, new script injects
         await chrome.tabs.reload(found.id);
       }
       await waitForContent(found.id, 30000);
-      return { tab: found, fresh: false };
+      return found;
     }
   }
-  // no live tab on the conversation: reopen it (ChatGPT restores the
-  // thread server-side); only a first-ever ask starts a brand-new chat
+  const tab = await chrome.tabs.create({ url, active: false });
+  await waitForContent(tab.id, 30000);
+  return tab;
+}
+
+async function getAdvisorTab(workspace) {
+  const { advisors = {} } = await chrome.storage.local.get("advisors");
+  const rec = advisors[workspace];
+  // the saved conversation URL is the durable link; only a first-ever ask
+  // (no url recorded yet) starts a brand-new chat
+  if (rec?.url) return { tab: await getTabForUrl(rec.url), fresh: false };
   const tab = await chrome.tabs.create({
-    url: rec?.url || "https://chatgpt.com/",
+    url: "https://chatgpt.com/",
     active: false,
   });
   await waitForContent(tab.id, 30000);
-  return { tab, fresh: !rec?.url };
+  return { tab, fresh: true };
 }
 
 async function waitForContent(tabId, timeoutMs) {

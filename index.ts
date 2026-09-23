@@ -579,7 +579,9 @@ async function runAsk(
     | "side-summary"
     | "side-last"
     | "side-close"
-    | "side-new",
+    | "side-new"
+    | "fetch-last"
+    | "fetch-ask",
   depth = 0,
   opts?: {
     importAs?: string;
@@ -587,6 +589,7 @@ async function runAsk(
     returnOnly?: boolean; // machine use: return the answer, don't import it
     files?: string[]; // workspace paths to attach (validated + staged)
     signal?: AbortSignal; // abort (ESC) cancels the wait instead of hanging
+    url?: string; // fetch modes: target any conversation by URL
   },
 ) {
   const st = bridgeStatus();
@@ -622,6 +625,7 @@ async function runAsk(
       question: wire,
       workspace: process.cwd(),
       files,
+      url: opts?.url,
     }),
   );
   // advisor handoff cursor: ChatGPT now has everything up to here — later
@@ -729,7 +733,14 @@ export async function askChatGPT(
 }
 
 // modes whose results are importable content; side-start/close/new are control ops
-const IMPORT_MODES = new Set(["advisor", "temp", "side-summary", "side-last"]);
+const IMPORT_MODES = new Set([
+  "advisor",
+  "temp",
+  "side-summary",
+  "side-last",
+  "fetch-last",
+  "fetch-ask",
+]);
 
 function recover(pi: ExtensionAPI, ctx: any) {
   let found = 0;
@@ -864,6 +875,25 @@ async function setupMenu(ctx: any) {
   }
 }
 
+// /chatgpt <url> last|sum|summarize|summary|handoff|all [message] — one-shot
+// fetch from any conversation. Unknown (or missing) verb behaves like `last`.
+export const FETCH_SUM_WORDS = [
+  "sum",
+  "summarize",
+  "summary",
+  "handoff",
+  "all",
+];
+export function parseFetch(a: string): [string, string, string] | null {
+  const m = /^(?:https?:\/\/)?chatgpt\.com\/\S+/i.exec(a);
+  if (!m) return null;
+  const rest = a.slice(m[0].length).trim();
+  const w = rest ? rest.split(/\s+/)[0].toLowerCase() : "";
+  const msg = w ? rest.slice(w.length).trim() : "";
+  if (FETCH_SUM_WORDS.includes(w)) return [m[0], w, msg];
+  return [m[0], "last", msg];
+}
+
 export default function (pi: ExtensionAPI) {
   // ChatGPT as an agent: callable by the LLM (this session, subagents, or
   // agents of other extensions) — the answer returns to the caller only.
@@ -943,7 +973,7 @@ export default function (pi: ExtensionAPI) {
   });
   pi.registerCommand("chatgpt", {
     description:
-      "/chatgpt <question> | handoff [focus]: <question> — consult ChatGPT web (advisor) and import Q+A; no args: status; recover: import captured; setup: options",
+      "/chatgpt <question> | handoff [focus]: <q> | <url> last|sum [msg] — consult ChatGPT web (advisor) and import Q+A; no args: status; recover: import captured; setup: options",
     handler: async (args: string, ctx: any) => {
       const a = (args || "").trim();
       if (a === "recover") return recover(pi, ctx);
@@ -959,6 +989,20 @@ export default function (pi: ExtensionAPI) {
               sentUpTo: h.sentUpTo,
             })
           : undefined;
+      }
+      const fr = parseFetch(a);
+      if (fr) {
+        const [url, verb, message] = fr;
+        if (verb === "last")
+          return runAsk(pi, ctx, "", "fetch-last", 0, { url });
+        return runAsk(
+          pi,
+          ctx,
+          `Summarize this conversation as a handoff an agent can resume from — state, decisions, open tasks, next steps.${message ? `\n\nThen address:\n\n${message}` : ""}`,
+          "fetch-ask",
+          0,
+          { url },
+        );
       }
       return runAsk(pi, ctx, a, "advisor");
     },
