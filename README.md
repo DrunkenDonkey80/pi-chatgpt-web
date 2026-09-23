@@ -5,6 +5,9 @@ daily browser's logged-in session — no API key, no second browser, no debug po
 
 ```
 /chatgpt <question>              ask the persistent advisor thread, import Q + A
+/chatgpt #<key> <question>       ask a persistent per-task advisor thread (own conversation per key, concurrent across keys)
+/chatgpt project <url>|off       new advisor conversations start inside that ChatGPT Project
+                                 machine API: chatgpt_consult({question, mode:"advisor", threadKey:"work-5.10"}) — same per-task thread as #work-5.10
 /chatgpt handoff <q>             same, but with recent session context prepended (you confirm first)
 /chatgpt handoff <focus>: <q>    handoff that summarizes a specific topic, then answers
 /chatgpt <url> [last [X]]       import the last exchange (or last X exchanges) from any conversation

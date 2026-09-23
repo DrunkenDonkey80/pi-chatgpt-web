@@ -768,6 +768,12 @@ function showStatus(ctx: any) {
         )
         .join(", ")}`,
     );
+  const thisWs = loadCfg().advisors[process.cwd()] ?? {};
+  const keyed = Object.entries(thisWs.threads ?? {});
+  if (keyed.length)
+    lines.push(`task threads: ${keyed.map(([k]) => `#${k}`).join(" ")}`);
+  if (thisWs.projectUrl)
+    lines.push(`project: ${thisWs.projectUrl}`);
   lines.push(
     "usage: /chatgpt <q> | handoff <q> | handoff llm: <q> | handoff <topic>: <q>",
     "options: /chatgpt setup",
@@ -798,6 +804,7 @@ async function runAsk(
     signal?: AbortSignal; // abort (ESC) cancels the wait instead of hanging
     url?: string; // fetch modes: target any conversation by URL
     count?: number | "all"; // fetch-last: how many exchanges to import
+    threadKey?: string; // advisor: persistent per-task conversation key
   },
 ) {
   if (!(await ensureBridge(ctx, opts?.signal))) {
@@ -834,6 +841,8 @@ async function runAsk(
       files,
       url: opts?.url,
       count: opts?.count,
+      threadKey: opts?.threadKey,
+      projectUrl: loadCfg().advisors[process.cwd()]?.projectUrl,
     }),
   );
   // advisor handoff cursor: ChatGPT now has everything up to here — later
@@ -901,6 +910,23 @@ async function runAsk(
             url: m.url,
             answerChars: (m.answer || "").length,
           });
+          // keyed advisor threads: remember the conversation per task key so
+          // /chatgpt status can show them (the browser keeps its own copy)
+          if (opts?.threadKey && mode === "advisor" && m.url) {
+            const c = loadCfg();
+            const ws = process.cwd();
+            c.advisors = {
+              ...c.advisors,
+              [ws]: {
+                ...c.advisors[ws],
+                threads: {
+                  ...c.advisors[ws]?.threads,
+                  [opts.threadKey]: m.url,
+                },
+              },
+            };
+            saveCfg(c);
+          }
           const answer =
             Array.isArray(m.artifacts) && m.artifacts.length
               ? linkArtifacts(m.answer || "", op.id, m.artifacts)
@@ -942,8 +968,13 @@ export async function askChatGPT(
   question: string,
   mode: "advisor" | "temp" = "advisor",
   files?: string[],
+  threadKey?: string,
 ): Promise<{ answer: string; url: string } | undefined> {
-  return runAsk(pi, ctx, question, mode, 0, { returnOnly: true, files });
+  return runAsk(pi, ctx, question, mode, 0, {
+    returnOnly: true,
+    files,
+    threadKey,
+  });
 }
 
 // modes whose results are importable content; side-start/close/new are control ops
@@ -1111,6 +1142,14 @@ export function parseFetch(a: string): [string, string, string] | null {
   return [m[0], "ask", rest];
 }
 
+export function validateThreadKey(k: string): boolean {
+  return /^[\w][\w.-]{0,63}$/.test(k);
+}
+
+export function validProjectUrl(u: string): boolean {
+  return /^https:\/\/chatgpt\.com\/project\/[\w-]+\/?$/.test(u);
+}
+
 export default function (pi: ExtensionAPI) {
   // ChatGPT as an agent: callable by the LLM (this session, subagents, or
   // agents of other extensions) — the answer returns to the caller only.
@@ -1143,6 +1182,11 @@ export default function (pi: ExtensionAPI) {
           description:
             "Optional workspace paths to attach to the question (max 3, 2MB total). Sent as real file attachments — screenshots, PDFs, source files.",
         },
+        threadKey: {
+          type: "string",
+          description:
+            'Optional stable per-task key (e.g. "work-5.10"): one persistent advisor conversation per key in this workspace, concurrent across keys; later calls with the same key resume it. Omit for the shared workspace advisor.',
+        },
       },
       required: ["question"],
     } as any,
@@ -1159,6 +1203,17 @@ export default function (pi: ExtensionAPI) {
         ],
       });
       lastError = "";
+      const threadKey = params.threadKey ? String(params.threadKey) : undefined;
+      if (threadKey && !validateThreadKey(threadKey))
+        return {
+          content: [
+            {
+              type: "text",
+              text: `invalid threadKey "${threadKey}" — use 1-64 chars: letters, digits, _ . -`,
+            },
+          ],
+          details: {},
+        };
       const r = await runAsk(
         pi,
         ctx,
@@ -1169,6 +1224,7 @@ export default function (pi: ExtensionAPI) {
           returnOnly: true,
           files: Array.isArray(params.files) ? params.files : undefined,
           signal: sig,
+          threadKey,
         },
       );
       if (!r)
@@ -1197,6 +1253,37 @@ export default function (pi: ExtensionAPI) {
       if (a === "recover") return recover(pi, ctx);
       if (a === "setup") return setupMenu(ctx);
       if (!a) return showStatus(ctx);
+      const tk = /^#([\w.-]{1,64})\s+([\s\S]+)/.exec(a);
+      if (tk)
+        return runAsk(pi, ctx, tk[2].trim(), "advisor", 0, {
+          threadKey: tk[1],
+        });
+      const pm = /^project(?:\s+(\S+))?\s*$/i.exec(a);
+      if (pm) {
+        const url = (pm[1] || "").trim();
+        const c = loadCfg();
+        const ws = process.cwd();
+        if (url === "off") {
+          delete c.advisors[ws]?.projectUrl;
+          saveCfg(c);
+          ctx.ui.notify("project: cleared — new advisor chats start at chatgpt.com", "info");
+        } else if (validProjectUrl(url)) {
+          c.advisors = {
+            ...c.advisors,
+            [ws]: { ...c.advisors[ws], projectUrl: url },
+          };
+          saveCfg(c);
+          ctx.ui.notify(`project: new advisor conversations start in ${url}`, "info");
+        } else {
+          ctx.ui.notify(
+            `usage: /chatgpt project <https://chatgpt.com/project/<id>> | off (current: ${
+              c.advisors[ws]?.projectUrl || "none"
+            })`,
+            "error",
+          );
+        }
+        return;
+      }
       if (/^handoff\b/i.test(a)) {
         const h = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim(), {
           mode: "advisor",

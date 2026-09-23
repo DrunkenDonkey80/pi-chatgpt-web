@@ -23,6 +23,8 @@ const {
   buildHandoff,
   stageAttachments,
   parseFetch,
+  validateThreadKey,
+  validProjectUrl,
   linkArtifacts,
   browserRootsWithExtension,
   defaultBrowserCommand,
@@ -422,6 +424,22 @@ assert.equal(parseFetch("hello world"), null, "no url -> null");
   const noN = parseFetch("https://chatgpt.com/c/abc last");
   assert.deepEqual([noN[1], noN[2]], ["last", ""], "bare last");
 }
+
+// --- threadKey / project url ------------------------------------------------
+assert.ok(validateThreadKey("work-5.10"), "valid threadKey");
+assert.ok(!validateThreadKey("../etc"), "no traversal");
+assert.ok(!validateThreadKey("a b"), "no spaces");
+assert.ok(!validateThreadKey(""), "no empty");
+assert.ok(!validateThreadKey("x".repeat(65)), "bounded length");
+assert.ok(
+  validProjectUrl("https://chatgpt.com/project/abc-123"),
+  "project url",
+);
+assert.ok(!validProjectUrl("https://evil.com/project/x"), "origin locked");
+assert.ok(
+  !validProjectUrl("https://chatgpt.com/c/abc"),
+  "must be a project path",
+);
 {
   const [, v, m] = parseFetch("https://chatgpt.com/c/abc HANDOFF  do it");
   assert.deepEqual([v, m], ["handoff", "do it"], "case-insensitive verb");

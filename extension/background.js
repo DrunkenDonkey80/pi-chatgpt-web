@@ -127,7 +127,7 @@ function queueCommand(cmd) {
         ? `side:${workspace}`
         : cmd.mode === "fetch-last" || cmd.mode === "fetch-ask"
           ? `url:${cmd.url}`
-          : `advisor:${workspace}`;
+          : `advisor:${workspace}${cmd.threadKey ? `:${cmd.threadKey}` : ""}`;
   const next = (commandQueues.get(key) || Promise.resolve())
     .then(() => handleCommand(cmd))
     .catch((e) => sendResult({ id: cmd.id, ok: false, error: String(e) }));
@@ -203,13 +203,16 @@ async function handleCommand(cmd) {
       return;
     }
     const workspace = cmd.workspace || "default";
-    const { tab, fresh } = await getAdvisorTab(workspace);
+    // per-task threads share the advisor storage, namespaced after '|'
+    const storeKey = cmd.threadKey ? `${workspace}|${cmd.threadKey}` : workspace;
+    const { tab, fresh } = await getAdvisorTab(storeKey, cmd.projectUrl);
     let question = cmd.question;
     if (fresh) {
       // brand-new conversation: label it so ChatGPT's auto-title (and the
       // advisor itself) knows which project this thread is about
       const name = workspace.split(/[\\/]/).filter(Boolean).pop() || workspace;
-      question = `[project: ${name}]\n\n${question}`;
+      const label = cmd.threadKey ? `${name}/${cmd.threadKey}` : name;
+      question = `[project: ${label}]\n\n${question}`;
     }
     const res = await askTab(
       tab.id, {
@@ -224,9 +227,13 @@ async function handleCommand(cmd) {
     );
     sendResult({ id: cmd.id, ...res, mode: "advisor" });
     // remember the conversation URL so the thread survives tab/browser restarts
-    if (res?.ok && res.url && res.url.includes("/c/")) {
+    if (
+      res?.ok &&
+      typeof res.url === "string" &&
+      /^https:\/\/chatgpt\.com\/c\//.test(res.url)
+    ) {
       const { advisors = {} } = await chrome.storage.local.get("advisors");
-      advisors[workspace] = { ...(advisors[workspace] || {}), url: res.url };
+      advisors[storeKey] = { ...(advisors[storeKey] || {}), url: res.url };
       await chrome.storage.local.set({ advisors });
     }
   } catch (e) {
@@ -302,14 +309,15 @@ async function getTabForUrl(url) {
   return tab;
 }
 
-async function getAdvisorTab(workspace) {
+async function getAdvisorTab(storeKey, projectUrl) {
   const { advisors = {} } = await chrome.storage.local.get("advisors");
-  const rec = advisors[workspace];
+  const rec = advisors[storeKey];
   // the saved conversation URL is the durable link; only a first-ever ask
-  // (no url recorded yet) starts a brand-new chat
+  // (no url recorded yet) starts a brand-new chat — inside the configured
+  // ChatGPT Project when one is set for this workspace
   if (rec?.url) return { tab: await getTabForUrl(rec.url), fresh: false };
   const tab = await chrome.tabs.create({
-    url: "https://chatgpt.com/",
+    url: projectUrl || "https://chatgpt.com/",
     active: false,
   });
   await waitForContent(tab.id, 30000);

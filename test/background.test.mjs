@@ -13,6 +13,7 @@ const asks = [];
 const blockedAsks = new Map();
 let onPortMessage;
 let chunkError = false;
+const persistent = {}; // stateful chrome.storage.local backing
 
 const port = {
   onMessage: { addListener: (fn) => (onPortMessage = fn) },
@@ -44,9 +45,15 @@ const chrome = {
     onStartup: { addListener: () => {} },
     onInstalled: { addListener: () => {} },
   },
-  storage: { local: { get: async () => ({}), set: async () => {} } },
+  storage: {
+    local: {
+      get: async (k) => (k in persistent ? { [k]: persistent[k] } : {}),
+      set: async (o) => Object.assign(persistent, o),
+    },
+  },
   tabs: {
     create: async () => ({ id: 1, url: "https://chatgpt.com/" }),
+    query: async () => [],
     sendMessage: async (_id, msg) => {
       if (msg.type === "ping") return { pong: true };
       asks.push(msg);
@@ -170,5 +177,49 @@ onPortMessage({
 assert.equal((await result("parallel-temp")).ok, true, "temp asks run in parallel");
 blockedAsks.get("block:temp")();
 assert.equal((await result("slow-temp")).ok, true);
+
+// keyed per-task threads: same key serializes, different keys run parallel,
+// and the conversation URL persists per (workspace, key)
+onPortMessage({
+  type: "command",
+  id: "key-a",
+  mode: "advisor",
+  workspace: "/tmp/keys",
+  threadKey: "work-5.10",
+  question: "block:keyA",
+});
+await waitBlocked("block:keyA");
+onPortMessage({
+  type: "command",
+  id: "key-b",
+  mode: "advisor",
+  workspace: "/tmp/keys",
+  threadKey: "work-5.11",
+  question: "par-keyB",
+});
+assert.equal((await result("key-b")).ok, true, "different keys parallel");
+onPortMessage({
+  type: "command",
+  id: "key-a2",
+  mode: "advisor",
+  workspace: "/tmp/keys",
+  threadKey: "work-5.10",
+  question: "ser-keyA2",
+});
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(
+  asks.some((a) => a.question.includes("ser-keyA2")),
+  false,
+  "same key serialized",
+);
+blockedAsks.get("block:keyA")();
+assert.equal((await result("key-a")).ok, true);
+assert.equal((await result("key-a2")).ok, true);
+assert.ok(
+  persistent.advisors["/tmp/keys|work-5.10"].url.startsWith(
+    "https://chatgpt.com/c/",
+  ),
+  "keyed thread url persisted",
+);
 
 console.log("background self-check: all assertions passed");
