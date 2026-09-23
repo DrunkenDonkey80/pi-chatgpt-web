@@ -1,22 +1,24 @@
-// Background service worker: owns the native port, the advisor tab, and the
-// one-in-flight guard. Commands arrive over the port (relayed from the spool
-// by the native host); results go back the same way.
+// Background service worker: owns the native port, advisor tabs, and
+// per-conversation queues. Commands arrive over the port (relayed from the
+// spool by the native host); results go back the same way.
 const HOST = "com.flex.pichatgptprobe";
 const ASK_TIMEOUT_MS = 21 * 60 * 1000; // content waits 180s start + 900s generation + 90s settle
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let port = null;
-let busyId = null; // id of the in-flight operation
 const results = new Map(); // id -> result, kept until the host acks
 const seen = new Set(); // processed command ids (idempotent redelivery)
+const commandQueues = new Map(); // destination -> settled tail promise
 
 // MV3 keepalive: a long silent generation gives the service worker nothing
 // to do, so Chrome kills it mid-ask — the pending promise, the results map
 // and the port all die, and the answer is lost. Any extension API call
 // resets the idle timer; ping every 25s while an ask is in flight.
 let keepalive = null;
+let activeCommands = 0;
 function startKeepalive() {
+  activeCommands++;
   if (!keepalive)
     keepalive = setInterval(
       () => chrome.runtime.getPlatformInfo(() => {}),
@@ -24,6 +26,7 @@ function startKeepalive() {
     );
 }
 function stopKeepalive() {
+  if (--activeCommands) return;
   clearInterval(keepalive);
   keepalive = null;
 }
@@ -111,10 +114,27 @@ function onPortMessage(msg) {
       return;
     }
     seen.add(msg.id);
-    handleCommand(msg).catch((e) =>
-      sendResult({ id: msg.id, ok: false, error: String(e) }),
-    );
+    queueCommand(msg);
   }
+}
+
+function queueCommand(cmd) {
+  const workspace = cmd.workspace || "default";
+  const key =
+    cmd.mode === "temp"
+      ? cmd.id
+      : cmd.mode?.startsWith("side-")
+        ? `side:${workspace}`
+        : cmd.mode === "fetch-last" || cmd.mode === "fetch-ask"
+          ? `url:${cmd.url}`
+          : `advisor:${workspace}`;
+  const next = (commandQueues.get(key) || Promise.resolve())
+    .then(() => handleCommand(cmd))
+    .catch((e) => sendResult({ id: cmd.id, ok: false, error: String(e) }));
+  commandQueues.set(key, next);
+  next.then(() => {
+    if (commandQueues.get(key) === next) commandQueues.delete(key);
+  });
 }
 
 function sendResult(r) {
@@ -123,15 +143,6 @@ function sendResult(r) {
 }
 
 async function handleCommand(cmd) {
-  if (busyId) {
-    sendResult({
-      id: cmd.id,
-      ok: false,
-      error: "busy: another consultation is in flight",
-    });
-    return;
-  }
-  busyId = cmd.id;
   startKeepalive();
   try {
     // pull staged attachments over the port before dispatching the ask
@@ -225,7 +236,6 @@ async function handleCommand(cmd) {
       error: String(e && e.message ? e.message : e),
     });
   } finally {
-    busyId = null;
     stopKeepalive();
   }
 }

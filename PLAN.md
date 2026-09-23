@@ -82,7 +82,7 @@ Promote the probe artifacts into product dirs at Milestone 2 start (keep `spike/
 | Path | Responsibility |
 | --- | --- |
 | `extension/manifest.json` | MV3: `nativeMessaging`, `tabs`, content scripts on `chatgpt.com/*` |
-| `extension/background.js` | Native port + keepalive, spool relay via host, tab lifecycle, one-in-flight guard |
+| `extension/background.js` | Native port + keepalive, spool relay via host, tab lifecycle, per-conversation queues |
 | `extension/content.js` | ChatGPT page adapter: composer fill, send, completion detection, extraction, temporary chat |
 | `native-host/host.js`, `host.bat`, `regcheck.js` | stdio host, spool polling, heartbeat (evolved from the proven probe) |
 | `index.ts` | Pi extension: commands, coordinator, spool client, import, recovery |
