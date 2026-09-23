@@ -35,14 +35,21 @@
   const FILE_NAME_RE = /[\w .+()-]{1,60}\.[A-Za-z0-9]{1,8}/;
   const DL_HREF_RE =
     /(oaiusercontent\.com|\/download|backend-api\/files|^blob:)/i;
+  // canvas file chips: doc-ish names that deserve body extraction via the API
+  const DOC_CARD_RE =
+    /\.(md|txt|json|csv|ya?ml|html?|xml|jsx?|tsx?|py|rb|go|rs|java|cs|sh|bash|zsh|sql|ini|toml|log)$/i;
   const b64 = (u8) => {
     let s = "";
     for (let i = 0; i < u8.length; i += 8192)
       s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
     return btoa(s);
   };
-  async function collectArtifacts(id, assistantEl) {
-    if (!assistantEl) return [];
+  // ponytail: scans every turn passed in — old images re-upload per consult
+  // (capped at 5, name-deduped on import) so earlier file links stay listed
+  async function collectArtifacts(id, assistantEls) {
+    const list = (Array.isArray(assistantEls) ? assistantEls : [assistantEls])
+      .filter(Boolean);
+    if (!list.length) return [];
     const candidates = [];
     const seen = new Set();
     const push = (name, src) => {
@@ -52,7 +59,8 @@
     };
     // generated images (skip avatars/thumbnails via the size floor)
     let n = 0;
-    for (const im of assistantEl.querySelectorAll("img")) {
+    for (const el of list) {
+      for (const im of el.querySelectorAll("img")) {
       const s = im.currentSrc || im.src || "";
       if (
         s &&
@@ -63,19 +71,38 @@
         const m = /([A-Za-z0-9._-]{3,60}\.(?:png|jpe?g|webp|gif))/.exec(s);
         push(m ? m[1] : `image-${n}.png`, s);
       }
+      }
     }
     // downloadable files: name from the link text, else the URL path
-    for (const a of assistantEl.querySelectorAll("a[href]")) {
-      const href = a.href || "";
-      if (!DL_HREF_RE.test(href)) continue;
-      const label = (a.textContent || "").trim();
-      const m =
-        FILE_NAME_RE.exec(label) ||
-        FILE_NAME_RE.exec(decodeURIComponent(href.split("?")[0]));
-      if (m) push(m[0], href);
+    for (const el of list) {
+      for (const a of el.querySelectorAll("a[href]")) {
+        const href = a.href || "";
+        if (!DL_HREF_RE.test(href)) continue;
+        const label = (a.textContent || "").trim();
+        const m =
+          FILE_NAME_RE.exec(label) ||
+          FILE_NAME_RE.exec(decodeURIComponent(href.split("?")[0]));
+        if (m) push(m[0], href);
+      }
     }
     const out = [];
     let total = 0;
+    const sendBuf = async (name, buf) => {
+      for (let off = 0; off < Math.max(buf.length, 1); off += 512 * 1024) {
+        try {
+          await chrome.runtime.sendMessage({
+            type: "put-file",
+            id,
+            name,
+            offset: off,
+            data: b64(buf.subarray(off, off + 512 * 1024)),
+          });
+        } catch {
+          return false; // relay down — skip this artifact, keep going
+        }
+      }
+      return true;
+    };
     for (let i = 0; i < candidates.length && out.length < MAX_ARTIFACTS; i++) {
       const c = candidates[i];
       let blob;
@@ -88,25 +115,64 @@
       }
       if (total + blob.size > MAX_ARTIFACT_BYTES) break;
       const buf = new Uint8Array(await blob.arrayBuffer());
-      for (let off = 0; off < Math.max(buf.length, 1); off += 512 * 1024) {
-        try {
-          await chrome.runtime.sendMessage({
-            type: "put-file",
-            id,
-            name: c.name,
-            offset: off,
-            data: b64(buf.subarray(off, off + 512 * 1024)),
-          });
-        } catch {
-          break; // relay down — skip this artifact, keep going
-        }
-      }
+      if (!(await sendBuf(c.name, buf))) break;
       total += buf.length;
       out.push({
         name: c.name,
         type: blob.type || "application/octet-stream",
         bytes: buf.length,
       });
+    }
+    // canvas file chips (ChatGPT-generated .md/.json/… docs): the chip links
+    // to the canvas, not a download URL — the body comes from the conversation
+    // API, where canvas documents appear as assistant "code" nodes.
+    // ponytail: chips ↔ code nodes matched by order; a thread mixing several
+    // canvases could attach one body to the wrong name — rename by hand then.
+    const carded = [];
+    for (const el of list) {
+      for (const a of el.querySelectorAll("a[href]")) {
+        const label = (a.textContent || "").trim();
+        const m = label && FILE_NAME_RE.exec(label);
+        if (
+          m &&
+          DOC_CARD_RE.test(m[0]) &&
+          !seen.has(m[0]) &&
+          !carded.includes(m[0])
+        )
+          carded.push(m[0]);
+      }
+    }
+    if (carded.length) {
+      try {
+        const sess = await (await fetch("/api/auth/session")).json();
+        const cid = (location.pathname.match(/\/c\/([0-9a-f-]{36})/) || [])[1];
+        const r =
+          sess?.accessToken && cid
+            ? await fetch(`/backend-api/conversation/${cid}`, {
+                headers: { Authorization: `Bearer ${sess.accessToken}` },
+              })
+            : null;
+        const docs = [];
+        if (r?.ok) {
+          const conv = await r.json();
+          for (const node of Object.values(conv.mapping || {})) {
+            const ct = node?.message?.content?.content_type;
+            if (node?.message?.author?.role === "assistant" && ct === "code")
+              docs.push(node.message.content);
+          }
+        }
+        for (let i = 0; i < carded.length && out.length < MAX_ARTIFACTS; i++) {
+          const body = docs[i]?.text || "";
+          if (!body) continue;
+          const buf = new TextEncoder().encode(body);
+          if (total + buf.length > MAX_ARTIFACT_BYTES) break;
+          if (!(await sendBuf(carded[i], buf))) break;
+          total += buf.length;
+          out.push({ name: carded[i], type: "text/plain", bytes: buf.length });
+        }
+      } catch {
+        // session/API unavailable — skip canvas docs, links still come back
+      }
     }
     return out;
   }
@@ -150,7 +216,7 @@
         if (!a)
           throw new Error("no assistant message in the side discussion yet");
         status("extracted last exchange");
-        const artifacts = await collectArtifacts(_id, a);
+        const artifacts = await collectArtifacts(_id, [...asst]);
         return {
           ok: true,
           url: location.href,
@@ -351,10 +417,7 @@
         const els = document.querySelectorAll(
           '[data-message-author-role="assistant"]',
         );
-        const artifacts = await collectArtifacts(
-          _id,
-          els[els.length - 1] || null,
-        );
+        const artifacts = await collectArtifacts(_id, [...els]);
         status("done");
         return {
           ok: true,
@@ -385,7 +448,7 @@
       const el = els[els.length - 1];
       if (!el) throw new Error("no assistant message to extract");
       const answer = domToMarkdown(el);
-      const artifacts = await collectArtifacts(_id, el);
+      const artifacts = await collectArtifacts(_id, [...els]);
       status("done");
       return { ok: true, url: location.href, question: q, answer, artifacts };
     } finally {
@@ -437,9 +500,14 @@
           .filter((p) => typeof p === "string")
           .join("");
         if (!norm(u).startsWith(qPrefix)) return null;
-        const text = (m.content?.parts || [])
-          .filter((p) => typeof p === "string")
-          .join("\n")
+        // canvas documents have no parts — the body is content.text
+        const raw =
+          m.content?.content_type === "code"
+            ? m.content.text || ""
+            : (m.content?.parts || [])
+                .filter((p) => typeof p === "string")
+                .join("\n");
+        const text = raw
           .replace(/\ue200[^\ue201]*\ue201/g, "") // inline citation tokens
           .trim();
         if (text) return text;

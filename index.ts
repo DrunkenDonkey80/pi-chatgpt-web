@@ -1103,7 +1103,9 @@ export function parseFetch(a: string): [string, string, string] | null {
   const w = rest ? rest.split(/\s+/)[0].toLowerCase() : "";
   const msg = w ? rest.slice(w.length).trim() : "";
   if (FETCH_SUM_WORDS.includes(w)) return [m[0], w, msg];
-  return [m[0], "last", msg];
+  if (!rest || w === "last") return [m[0], "last", ""];
+  // any other text is a follow-up message sent into that conversation
+  return [m[0], "ask", rest];
 }
 
 export default function (pi: ExtensionAPI) {
@@ -1208,6 +1210,8 @@ export default function (pi: ExtensionAPI) {
         const [url, verb, message] = fr;
         if (verb === "last")
           return runAsk(pi, ctx, "", "fetch-last", 0, { url });
+        if (verb === "ask")
+          return runAsk(pi, ctx, message, "fetch-ask", 0, { url });
         return runAsk(
           pi,
           ctx,

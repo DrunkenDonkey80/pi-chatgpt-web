@@ -7,7 +7,8 @@ daily browser's logged-in session — no API key, no second browser, no debug po
 /chatgpt <question>              ask the persistent advisor thread, import Q + A
 /chatgpt handoff <q>             same, but with recent session context prepended (you confirm first)
 /chatgpt handoff <focus>: <q>    handoff that summarizes a specific topic, then answers
-/chatgpt <url> last              import the last exchange from any ChatGPT conversation
+/chatgpt <url> [last]            import the last exchange from any ChatGPT conversation
+/chatgpt <url> <msg>             send <msg> into that conversation as a follow-up, import the answer
 /chatgpt <url> sum [msg]         ChatGPT summarizes that conversation as a resumable handoff
                                  (sum|summarize|summary|handoff|all all work), msg appended — import so the agent starts working
 /chatgpt                         bridge status + pending operations

@@ -400,7 +400,21 @@ assert.equal(parseFetch("hello world"), null, "no url -> null");
 }
 {
   const [, v, m] = parseFetch("https://chatgpt.com/c/abc whatever else");
-  assert.deepEqual([v, m], ["last", "else"], "unknown verb -> last");
+  assert.deepEqual([v, m], ["ask", "whatever else"], "bare message -> ask");
+  const bare = parseFetch("chatgpt.com/c/abc");
+  assert.deepEqual(
+    [bare[1], bare[2]],
+    ["last", ""],
+    "bare url -> last",
+  );
+  const ask = parseFetch(
+    "https://chatgpt.com/c/abc get this prompt and make a plan",
+  );
+  assert.deepEqual(
+    [ask[1], ask[2]],
+    ["ask", "get this prompt and make a plan"],
+    "message kept intact",
+  );
 }
 {
   const [, v, m] = parseFetch("https://chatgpt.com/c/abc HANDOFF  do it");
