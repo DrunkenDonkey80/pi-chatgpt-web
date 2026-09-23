@@ -655,9 +655,11 @@ export function defaultBrowserCommand(platform = process.platform): {
   if (platform === "win32")
     return {
       command: process.env.ComSpec || "cmd.exe",
-      args: ["/d", "/c", "start", "", url],
+      args: ["/d", "/c", "start", "/min", "", url],
     };
-  if (platform === "darwin") return { command: "open", args: [url] };
+  // -g: don't steal focus; /min only helps when the browser starts fresh —
+  // a new tab in a running browser still focuses (OS limitation, accepted)
+  if (platform === "darwin") return { command: "open", args: ["-g", url] };
   return { command: "xdg-open", args: [url] };
 }
 

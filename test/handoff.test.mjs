@@ -124,9 +124,13 @@ assert.deepEqual(defaultBrowserCommand("linux"), {
 });
 assert.deepEqual(defaultBrowserCommand("darwin"), {
   command: "open",
-  args: ["https://chatgpt.com/"],
+  args: ["-g", "https://chatgpt.com/"],
 });
 assert.equal(defaultBrowserCommand("win32").args.at(-1), "https://chatgpt.com/");
+assert.ok(
+  defaultBrowserCommand("win32").args.includes("/min"),
+  "win32 browser launch is minimized",
+);
 
 const configHome = path.join(tmp, "config");
 const browserRoot = path.join(configHome, "vendor", "product");

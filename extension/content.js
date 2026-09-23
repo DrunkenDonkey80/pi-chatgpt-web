@@ -325,10 +325,28 @@
       while (document.querySelector(stopSel) && Date.now() - t0 < 900000)
         await sleep(500);
 
+      // completion gate: ChatGPT shows the copy action under the last message
+      // only when it has fully rendered — the stop button can vanish while
+      // text is still streaming in, which truncated answers mid-sentence.
+      const copySel =
+        'button[data-testid="copy-turn-button"], button[aria-label="Copy"]';
+      status("waiting for the full answer…");
+      t0 = Date.now();
+      while (Date.now() - t0 < 900000) {
+        const asst = document.querySelectorAll(
+          '[data-message-author-role="assistant"]',
+        );
+        if (asst.length && asst[asst.length - 1].querySelector(copySel)) break;
+        await sleep(500);
+      }
+
       // background tabs don't render: the DOM can freeze mid-stream and look
       // "stable" while truncated. The conversation API is render-independent.
       status("fetching final answer…");
-      const apiText = await apiAnswer(qPrefix, 900000).catch(() => null);
+      const apiText =
+        mode === "temp"
+          ? null // temp chats have no /c/<uuid> — don't burn the 30s id wait
+          : await apiAnswer(qPrefix, 900000).catch(() => null);
       if (apiText) {
         const els = document.querySelectorAll(
           '[data-message-author-role="assistant"]',
