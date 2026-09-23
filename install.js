@@ -24,8 +24,77 @@ const ROOT = __dirname;
 const EXT_DIR = path.join(ROOT, "extension");
 const CRX = path.join(ROOT, "extension.crx");
 const PEM = path.join(ROOT, "extension.pem");
-const BROWSER =
-  "C:\\Users\\Flex\\AppData\\Local\\imput\\Helium\\Application\\chrome.exe";
+const browserArg = process.argv.includes("--browser")
+  ? process.argv[process.argv.indexOf("--browser") + 1]
+  : undefined;
+const browserCandidates = [
+  browserArg,
+  process.env.PI_CHATGPT_BROWSER,
+  process.env.LOCALAPPDATA &&
+    path.join(
+      process.env.LOCALAPPDATA,
+      "imput",
+      "Helium",
+      "Application",
+      "chrome.exe",
+    ),
+  process.env.LOCALAPPDATA &&
+    path.join(
+      process.env.LOCALAPPDATA,
+      "Google",
+      "Chrome",
+      "Application",
+      "chrome.exe",
+    ),
+  process.env.LOCALAPPDATA &&
+    path.join(
+      process.env.LOCALAPPDATA,
+      "Chromium",
+      "Application",
+      "chrome.exe",
+    ),
+  process.env.LOCALAPPDATA &&
+    path.join(
+      process.env.LOCALAPPDATA,
+      "Microsoft",
+      "Edge",
+      "Application",
+      "msedge.exe",
+    ),
+  process.env.PROGRAMFILES &&
+    path.join(
+      process.env.PROGRAMFILES,
+      "Google",
+      "Chrome",
+      "Application",
+      "chrome.exe",
+    ),
+  process.env.PROGRAMFILES &&
+    path.join(
+      process.env.PROGRAMFILES,
+      "Microsoft",
+      "Edge",
+      "Application",
+      "msedge.exe",
+    ),
+  process.env["PROGRAMFILES(X86)"] &&
+    path.join(
+      process.env["PROGRAMFILES(X86)"],
+      "Google",
+      "Chrome",
+      "Application",
+      "chrome.exe",
+    ),
+  process.env["PROGRAMFILES(X86)"] &&
+    path.join(
+      process.env["PROGRAMFILES(X86)"],
+      "Microsoft",
+      "Edge",
+      "Application",
+      "msedge.exe",
+    ),
+].filter(Boolean);
+const BROWSER = browserCandidates.find(fs.existsSync);
 const HOST_MANIFEST = path.join(
   ROOT,
   "native-host",
@@ -34,6 +103,7 @@ const HOST_MANIFEST = path.join(
 const REG_ROOTS = [
   "Software\\Chromium\\Extensions",
   "Software\\Google\\Chrome\\Extensions",
+  "Software\\Microsoft\\Edge\\Extensions",
   "Software\\Helium\\Extensions",
 ];
 
@@ -133,7 +203,11 @@ if (process.argv.includes("--id")) {
   process.exit(0);
 }
 
-if (!fs.existsSync(BROWSER)) throw new Error(`browser not found: ${BROWSER}`);
+if (!BROWSER) {
+  throw new Error(
+    "browser not found; pass --browser <path> or set PI_CHATGPT_BROWSER",
+  );
+}
 
 // 1. pack (headless chrome packs and exits 0; first run also creates the key)
 const tmpProfile = fs.mkdtempSync(path.join(os.tmpdir(), "helium-pack-"));
@@ -272,17 +346,20 @@ for (const r of REG_ROOTS) {
     "/f",
   ]);
 }
-console.log(
-  "registered as external extension (Chromium / Google\\Chrome / Helium roots)",
-);
+console.log("registered as external extension for supported browser roots");
 
 // 3. re-pin the native host manifest to the stable ID
 const host = readJson(HOST_MANIFEST);
 host.allowed_origins = [`chrome-extension://${id}/`];
 fs.writeFileSync(HOST_MANIFEST, JSON.stringify(host, null, 2) + "\n");
 console.log(`native host pinned to chrome-extension://${id}/`);
+execFileSync(
+  process.execPath,
+  [path.join(ROOT, "native-host", "regcheck.js")],
+  { stdio: "inherit" },
+);
 
 console.log(
-  "\nNext: fully quit Helium (tray icon too) and relaunch, then check chrome://extensions.\n" +
+  "\nNext: fully quit the browser (tray icon too) and relaunch, then check chrome://extensions.\n" +
     "Remove the old unpacked copy if it is still listed. After any manifest change: node install.js again.",
 );

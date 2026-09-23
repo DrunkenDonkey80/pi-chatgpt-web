@@ -41,24 +41,26 @@ exactly one pinned extension ID.
 
 ## Install (once, ~2 minutes)
 
-1. **Pack + pin** — `node install.js`. Packs `extension/` into a signed `extension.crx`
-   (fixing Chromium 153's broken packer signature along the way), writes the native-host
-   registry entries, and pins the host manifest to the stable extension ID. If your browser
-   isn't Helium at the default path, edit `BROWSER` at the top of `install.js` first.
-2. **Native host** — `node native-host\regcheck.js` (HKCU registration for the messaging host;
-   safe to re-run anytime).
-3. **Load the extension** — `chrome://extensions` → enable **Developer mode** → **Load
+1. **Pack + register** — `node install.js`. It auto-detects Helium, Chrome, Chromium, or Edge,
+   packs `extension/`, registers the native host using this checkout's current path, and pins
+   the stable extension ID. For another Chromium executable, use
+   `node install.js --browser "C:\path\to\chrome.exe"` or set `PI_CHATGPT_BROWSER`.
+2. **Load the extension** — `chrome://extensions` → enable **Developer mode** → **Load
    unpacked** → select this repo's `extension/` folder. The manifest carries a committed key,
    so the extension ID is **stable** (`ajlnbjgehaidkajobnhkmchjaknjnalj`) no matter where the
    folder lives — it matches what `install.js` pinned, which is what makes the bridge work.
-4. **pi extension** — add this repo to the `packages` array in `~/.pi/agent/settings.json`:
+3. **pi extension** — add the Git package or your local checkout to the `packages` array in
+   `~/.pi/agent/settings.json`:
 
    ```json
-   "packages": ["C:\\SOFT\\git\\pi-chatgpt-web"]
+   "packages": ["https://github.com/DrunkenDonkey80/pi-chatgpt-web"]
    ```
 
    (Or just run pi inside the repo — `package.json` wires `index.ts` up automatically.)
-5. **Verify** — restart pi, run `/chatgpt` in any session: `bridge: UP`.
+4. **Verify** — restart the browser and pi, then run `/chatgpt`: `bridge: UP`.
+
+If the checkout is moved, rerun `node native-host\regcheck.js`; it repairs the manifest and
+registry paths without repacking the extension.
 
 Why developer mode? Modern non-managed Chromium refuses every sideload route: self-hosted CRX
 registry installs are ignored, drag-dropped CRXs fail with `CRX_REQUIRED_PROOF_MISSING`

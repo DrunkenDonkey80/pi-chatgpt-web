@@ -3,15 +3,40 @@
 // `node regcheck.js --remove` deletes the entries (full disable; the host
 // manifest and files stay on disk).
 const { execFileSync } = require("child_process");
-const MANIFEST =
-  "C:\\SOFT\\git\\pi-chatgpt-web\\native-host\\com.flex.pichatgptprobe.json";
+const fs = require("fs");
+const path = require("path");
 const HOST = "com.flex.pichatgptprobe";
+const SOURCE_MANIFEST = path.join(__dirname, `${HOST}.json`);
+const RUNTIME_DIR = path.join(
+  process.env.LOCALAPPDATA || __dirname,
+  "pi-chatgpt-web",
+);
+const MANIFEST = path.join(RUNTIME_DIR, `${HOST}.json`);
+const LAUNCHER = path.join(RUNTIME_DIR, "host.bat");
 const roots = [
   "Software\\Chromium",
   "Software\\Google\\Chrome",
+  "Software\\Microsoft\\Edge",
   "Software\\Helium",
   "Software\\imput\\Helium",
 ];
+
+if (!process.argv.includes("--remove")) {
+  fs.mkdirSync(RUNTIME_DIR, { recursive: true });
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(SOURCE_MANIFEST, "utf8"));
+  } catch (e) {
+    throw new Error(`invalid native-host manifest: ${e.message}`);
+  }
+  manifest.path = LAUNCHER;
+  fs.writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2) + "\n");
+  fs.writeFileSync(
+    LAUNCHER,
+    `@echo off\r\n"${process.execPath}" "${path.join(__dirname, "host.js")}"\r\n`,
+  );
+  console.log(`native host runtime -> ${RUNTIME_DIR}`);
+}
 
 for (const r of roots) {
   const key = `HKCU\\${r}\\NativeMessagingHosts\\${HOST}`;

@@ -1,7 +1,7 @@
 {
   "name": "com.flex.pichatgptprobe",
   "description": "pi-chatgpt-web native bridge host",
-  "path": "C:\\SOFT\\git\\pi-chatgpt-web\\native-host\\host.bat",
+  "path": "",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://ajlnbjgehaidkajobnhkmchjaknjnalj/"
