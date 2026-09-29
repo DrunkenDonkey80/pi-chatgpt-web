@@ -144,6 +144,7 @@ interface Cfg {
   handoffMaxChars: number; // transcript budget for handoff, default 6000
   summaryModel: string; // "" = current session model
   summaryEffort: string; // "" = model default; else minimal|low|medium|high|xhigh
+  advisorDisabled?: boolean; // kill switch: blocks advisor asks + consult advisor mode
   advisors: Record<
     string,
     { sentUpTo?: { id: string; ts: number } } | undefined
@@ -379,6 +380,7 @@ const ATTACH_MIME: Record<string, string> = {
 export function stageAttachments(
   files: string[],
   opId: string,
+  allowOutsideWorkspace = false,
 ): { name: string; type: string }[] {
   if (!files.length) return [];
   if (files.length > MAX_ATTACH)
@@ -399,7 +401,11 @@ export function stageAttachments(
   let total = 0;
   for (const p of files) {
     const abs = path.resolve(CWD, p);
-    if (abs !== CWD && !abs.startsWith(CWD + path.sep))
+    if (
+      !allowOutsideWorkspace &&
+      abs !== CWD &&
+      !abs.startsWith(CWD + path.sep)
+    )
       throw new Error(`${p}: refused (outside the workspace)`);
     const stat = fs.statSync(abs); // missing file -> throws, tool surfaces it
     if (stat.isDirectory()) throw new Error(`${p}: is a directory`);
@@ -416,6 +422,28 @@ export function stageAttachments(
     out.push({ name, type: ATTACH_MIME[ext] ?? "application/octet-stream" });
   }
   return out;
+}
+
+// Slash commands are explicit user input, so local paths may point outside the
+// workspace. Quoting supports paths with spaces; unquoted paths stay one token.
+export function extractLocalAttachments(input: string) {
+  const files: string[] = [];
+  const token = /"([^"]+)"|'([^']+)'|(\S+)/g;
+  let out = "";
+  let last = 0;
+  for (const m of input.matchAll(token)) {
+    const raw = m[1] ?? m[2] ?? m[3];
+    let candidate = raw;
+    try {
+      if (/^file:\/\//i.test(candidate)) candidate = fileURLToPath(candidate);
+      const abs = path.resolve(CWD, candidate);
+      if (!fs.statSync(abs).isFile()) continue;
+      out += input.slice(last, m.index) + path.basename(abs);
+      last = (m.index ?? 0) + m[0].length;
+      if (!files.includes(abs)) files.push(abs);
+    } catch {}
+  }
+  return { question: out + input.slice(last), files };
 }
 
 // copy staged artifacts (spool/artifacts-<opId>/) into the project's
@@ -760,6 +788,8 @@ function showStatus(ctx: any) {
       "run /chatgpt recover to import captured-but-unimported answers",
     );
   const threads = Object.entries(loadCfg().advisors ?? {});
+  if (loadCfg().advisorDisabled)
+    lines.push("advisor: DISABLED — /chatgpt advisor on to re-enable");
   if (threads.length)
     lines.push(
       `advisor threads: ${threads
@@ -805,8 +835,16 @@ async function runAsk(
     url?: string; // fetch modes: target any conversation by URL
     count?: number | "all"; // fetch-last: how many exchanges to import
     threadKey?: string; // advisor: persistent per-task conversation key
+    allowOutsideFiles?: boolean; // slash commands: paths were explicitly supplied
   },
 ) {
+  if (mode === "advisor" && loadCfg().advisorDisabled) {
+    fail(
+      ctx,
+      "advisor disabled — re-enable with /chatgpt advisor on (/tempgpt still works)",
+    );
+    return;
+  }
   if (!(await ensureBridge(ctx, opts?.signal))) {
     fail(
       ctx,
@@ -824,7 +862,7 @@ async function runAsk(
   };
   appendOp(op);
   const files = opts?.files?.length
-    ? stageAttachments(opts.files, op.id)
+    ? stageAttachments(opts.files, op.id, opts.allowOutsideFiles)
     : undefined;
   const wire =
     mode === "advisor" || mode === "temp" || mode === "side-start"
@@ -1046,6 +1084,7 @@ async function setupMenu(ctx: any) {
       `handoff max size: ${cfg.handoffMaxChars} chars`,
       `summary model: ${cfg.summaryModel || "(current session model)"}`,
       `summary effort: ${cfg.summaryEffort || "(model default)"}`,
+      `advisor: ${cfg.advisorDisabled ? "disabled" : "enabled"}`,
       "reset advisor handoff cursor",
       "done",
     ]);
@@ -1105,6 +1144,13 @@ async function setupMenu(ctx: any) {
         cfg.summaryEffort = e === "(model default)" ? "" : e;
         saveCfg(cfg);
       }
+    } else if (pick.startsWith("advisor")) {
+      cfg.advisorDisabled = !cfg.advisorDisabled;
+      saveCfg(cfg);
+      ctx.ui.notify(
+        `advisor ${cfg.advisorDisabled ? "disabled" : "enabled"}`,
+        "info",
+      );
     } else if (pick.startsWith("reset")) {
       if (
         await ctx.ui.confirm(
@@ -1253,11 +1299,30 @@ export default function (pi: ExtensionAPI) {
       if (a === "recover") return recover(pi, ctx);
       if (a === "setup") return setupMenu(ctx);
       if (!a) return showStatus(ctx);
+      const ad = /^advisor(?:\s+(on|off))?\s*$/i.exec(a);
+      if (ad) {
+        const c = loadCfg();
+        if (ad[1]) {
+          c.advisorDisabled = ad[1].toLowerCase() === "off";
+          saveCfg(c);
+        }
+        ctx.ui.notify(
+          c.advisorDisabled
+            ? "advisor DISABLED — /chatgpt questions and chatgpt_consult advisor mode are blocked; /tempgpt unaffected"
+            : "advisor enabled",
+          "info",
+        );
+        return;
+      }
       const tk = /^#([\w.-]{1,64})\s+([\s\S]+)/.exec(a);
-      if (tk)
-        return runAsk(pi, ctx, tk[2].trim(), "advisor", 0, {
+      if (tk) {
+        const local = extractLocalAttachments(tk[2].trim());
+        return runAsk(pi, ctx, local.question, "advisor", 0, {
           threadKey: tk[1],
+          files: local.files,
+          allowOutsideFiles: true,
         });
+      }
       const pm = /^project(?:\s+(\S+))?\s*$/i.exec(a);
       if (pm) {
         const url = (pm[1] || "").trim();
@@ -1285,13 +1350,16 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (/^handoff\b/i.test(a)) {
-        const h = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim(), {
-          mode: "advisor",
-        });
+        const local = extractLocalAttachments(
+          a.replace(/^handoff\b/i, "").trim(),
+        );
+        const h = await buildHandoff(ctx, local.question, { mode: "advisor" });
         return h
           ? runAsk(pi, ctx, h.q, "advisor", 0, {
               importAs: h.label,
               sentUpTo: h.sentUpTo,
+              files: local.files,
+              allowOutsideFiles: true,
             })
           : undefined;
       }
@@ -1305,18 +1373,31 @@ export default function (pi: ExtensionAPI) {
           });
         if (verb === "all")
           return runAsk(pi, ctx, "", "fetch-last", 0, { url, count: "all" });
+        const local = extractLocalAttachments(message);
         if (verb === "ask")
-          return runAsk(pi, ctx, message, "fetch-ask", 0, { url });
+          return runAsk(pi, ctx, local.question, "fetch-ask", 0, {
+            url,
+            files: local.files,
+            allowOutsideFiles: true,
+          });
         return runAsk(
           pi,
           ctx,
-          `Summarize this conversation as a handoff an agent can resume from — state, decisions, open tasks, next steps.${message ? `\n\nThen address:\n\n${message}` : ""}`,
+          `Summarize this conversation as a handoff an agent can resume from — state, decisions, open tasks, next steps.${local.question ? `\n\nThen address:\n\n${local.question}` : ""}`,
           "fetch-ask",
           0,
-          { url },
+          {
+            url,
+            files: local.files,
+            allowOutsideFiles: true,
+          },
         );
       }
-      return runAsk(pi, ctx, a, "advisor");
+      const local = extractLocalAttachments(a);
+      return runAsk(pi, ctx, local.question, "advisor", 0, {
+        files: local.files,
+        allowOutsideFiles: true,
+      });
     },
   });
 
@@ -1328,14 +1409,23 @@ export default function (pi: ExtensionAPI) {
       if (a === "recover") return recover(pi, ctx);
       if (!a) return showStatus(ctx);
       if (/^handoff\b/i.test(a)) {
-        const h = await buildHandoff(ctx, a.replace(/^handoff\b/i, "").trim(), {
-          mode: "temp",
-        });
+        const local = extractLocalAttachments(
+          a.replace(/^handoff\b/i, "").trim(),
+        );
+        const h = await buildHandoff(ctx, local.question, { mode: "temp" });
         return h
-          ? runAsk(pi, ctx, h.q, "temp", 0, { importAs: h.label })
+          ? runAsk(pi, ctx, h.q, "temp", 0, {
+              importAs: h.label,
+              files: local.files,
+              allowOutsideFiles: true,
+            })
           : undefined;
       }
-      return runAsk(pi, ctx, a, "temp");
+      const local = extractLocalAttachments(a);
+      return runAsk(pi, ctx, local.question, "temp", 0, {
+        files: local.files,
+        allowOutsideFiles: true,
+      });
     },
   });
 

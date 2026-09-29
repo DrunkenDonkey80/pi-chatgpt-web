@@ -22,6 +22,7 @@ const {
   budgetPairs,
   buildHandoff,
   stageAttachments,
+  extractLocalAttachments,
   parseFetch,
   validateThreadKey,
   validProjectUrl,
@@ -328,6 +329,29 @@ assert.ok(
 );
 clearCfg();
 
+// --- slash-command local attachments --------------------------------------
+{
+  const abs = path.join(tmp, "a.png");
+  fs.writeFileSync(abs, "image");
+  assert.deepEqual(
+    extractLocalAttachments(`${abs} look at that`),
+    { question: "a.png look at that", files: [abs] },
+    "absolute path becomes an attachment and basename",
+  );
+  const spaced = path.join(tmp, "screen shot.png");
+  fs.writeFileSync(spaced, "image");
+  assert.deepEqual(
+    extractLocalAttachments(`compare "${spaced}" please`),
+    { question: "compare screen shot.png please", files: [spaced] },
+    "quoted paths may contain spaces",
+  );
+  assert.deepEqual(
+    extractLocalAttachments("C:\\missing\\nope.png look"),
+    { question: "C:\\missing\\nope.png look", files: [] },
+    "missing paths remain plain text",
+  );
+}
+
 // --- consult attachments (stageAttachments) -----------------------------
 {
   const SPOOL = path.resolve(
@@ -382,6 +406,16 @@ clearCfg();
     threw++;
   }
   assert.equal(threw, 4, "count/size/sandbox/missing all refused");
+
+  const outside = path.join(os.tmpdir(), `outside-${process.pid}.txt`);
+  fs.writeFileSync(outside, "explicit slash attachment");
+  const explicit = stageAttachments([outside], "att-test-outside", true);
+  assert.equal(explicit[0].name, path.basename(outside), "explicit path allowed");
+  fs.rmSync(outside, { force: true });
+  fs.rmSync(path.join(SPOOL, "attach-att-test-outside"), {
+    recursive: true,
+    force: true,
+  });
 }
 
 // --- parseFetch: /chatgpt <url> verb parsing -------------------------------

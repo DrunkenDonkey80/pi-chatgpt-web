@@ -115,6 +115,21 @@ onPortMessage({
 assert.equal((await result("attachment-ok")).ok, true);
 assert.equal(atob(asks[0].attachments[0].data), "abcde");
 
+onPortMessage({
+  type: "command",
+  id: "fetch-attachment",
+  mode: "fetch-ask",
+  url: "https://chatgpt.com/c/00000000-0000-0000-0000-000000000000",
+  question: "inspect a.txt",
+  files: [{ name: "a.txt", type: "text/plain" }],
+});
+assert.equal((await result("fetch-attachment")).ok, true);
+assert.equal(
+  atob(asks.find((a) => a.question === "inspect a.txt").attachments[0].data),
+  "abcde",
+  "conversation follow-ups include local attachments",
+);
+
 chunkError = true;
 onPortMessage({
   type: "command",

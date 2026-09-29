@@ -18,8 +18,11 @@ daily browser's logged-in session — no API key, no second browser, no debug po
 /chatgpt                         bridge status + pending operations
 /chatgpt recover                 import captured-but-unimported answers
 /chatgpt setup                    handoff budget, summarizer model/effort, send-cursor reset
+/chatgpt advisor on|off         advisor kill switch — blocks /chatgpt asks + chatgpt_consult advisor mode; /tempgpt unaffected
 /tempgpt <question>              ask via a real Temporary Chat (not saved to your history)
 /tempgpt handoff ...             handoff variant of the above
+                                 local file paths in questions are uploaded; quote paths containing spaces
+                                 e.g. /chatgpt C:\work\02_ink.png look at that → "02_ink.png look at that" + attachment
 /sidegpt start <q>               open (or resume) a side discussion tab — continue it in the browser
 /sidegpt summary [focus]         import a ChatGPT-generated summary of the side discussion
 /sidegpt last                    import just the last exchange from the side discussion
