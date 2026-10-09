@@ -940,6 +940,7 @@ async function runAsk(
                 importAs: opts?.importAs ?? question,
                 returnOnly: opts?.returnOnly,
                 signal: opts?.signal,
+                threadKey: opts?.threadKey,
               },
             );
           }

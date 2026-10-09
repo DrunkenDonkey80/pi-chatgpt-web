@@ -7,8 +7,31 @@
   // — not even a space), so strip all whitespace on both sides, never
   // collapse-and-compare
   const norm = (s) => (s || "").replace(/\s+/g, "");
-  const turns = () =>
-    document.querySelectorAll('[data-message-author-role="assistant"]').length;
+  const USER_TURN =
+    '[data-message-author-role="user"], [data-user-message-bubble]';
+  const ASSISTANT_TURN =
+    '[data-message-author-role="assistant"], [data-dil-message-id]';
+  // During UI transitions both markers can exist; count each outer turn once.
+  const messageTurns = (selector) =>
+    [...document.querySelectorAll(selector)].filter(
+      (el) => !el.parentElement?.closest(selector),
+    );
+  const turns = () => messageTurns(ASSISTANT_TURN).length;
+
+  const findComposer = () => {
+    const visible = (el) => el.getClientRects().length > 0;
+    const named = document.querySelector(
+      '#prompt-textarea[contenteditable="true"]',
+    );
+    if (named && visible(named)) return named;
+    // The new composer has no id; its marker avoids unrelated rich-text editors.
+    const editors = [
+      ...document.querySelectorAll('[data-composer-markdown][contenteditable="true"]'),
+    ].filter(
+      (el) => visible(el) && !el.closest('[data-message-author-role], [role="dialog"]'),
+    );
+    return editors.length === 1 ? editors[0] : null;
+  };
 
   let chip = null;
   const status = (t) => {
@@ -198,6 +221,8 @@
   });
 
   async function ask(_id, question, mode, attachments, count) {
+    let composer = null;
+    let filledComposer = false;
     try {
       const q = question;
       if (mode === "side-last") {
@@ -207,12 +232,8 @@
         const st = Date.now();
         while (document.querySelector(stopSel) && Date.now() - st < 300000)
           await sleep(500);
-        const users = document.querySelectorAll(
-          '[data-message-author-role="user"]',
-        );
-        const asst = document.querySelectorAll(
-          '[data-message-author-role="assistant"]',
-        );
+        const users = messageTurns(USER_TURN);
+        const asst = messageTurns(ASSISTANT_TURN);
         if (!asst.length)
           throw new Error("no assistant message in the side discussion yet");
         // last N exchanges (or the whole thread): pair users/assistants from
@@ -242,10 +263,9 @@
       // the composer mounts after React hydrates — poll for it (fresh tabs hit
       // this every time; readyState=interactive has only a fallback textarea)
       status("waiting for composer…");
-      let composer = null;
       const tw = Date.now();
       while (Date.now() - tw < 15000) {
-        composer = document.querySelector("#prompt-textarea");
+        composer = findComposer();
         if (composer) break;
         await sleep(300);
       }
@@ -260,7 +280,7 @@
           )
           .join(" ");
         throw new Error(
-          `composer #prompt-textarea not found after 15s; readyState=${document.readyState}; candidates: ${cands || "NONE"}`,
+          `composer not found or ambiguous after 15s (#prompt-textarea or a unique visible data-composer-markdown editor); readyState=${document.readyState}; candidates: ${cands || "NONE"}`,
         );
       }
       if (mode === "temp") {
@@ -309,6 +329,7 @@
       }
       status("filling composer…");
       composer.focus();
+      filledComposer = true;
       document.execCommand("selectAll");
       document.execCommand("delete");
       if (!document.execCommand("insertText", false, q))
@@ -367,9 +388,7 @@
       let enterRetryTried = false;
       let userTurn = null;
       while (Date.now() - t0 < 30000) {
-        const users = document.querySelectorAll(
-          '[data-message-author-role="user"]',
-        );
+        const users = messageTurns(USER_TURN);
         userTurn = users.length ? users[users.length - 1] : null;
         const okTurn = userTurn && norm(userTurn.innerText).includes(qPrefix);
         if (okTurn && !(composer.textContent || "").trim()) break;
@@ -386,6 +405,14 @@
           `send verification failed — last user turn: "${lastUser.slice(0, 60)}"; composer: "${(composer.textContent || "").slice(0, 40)}"; diag: ${diag.join(", ")}`,
         );
 
+      // Do not gate API completion on DOM markers: normal and temporary chats
+      // can use different renderers. The API verifies our user-turn ancestor.
+      let apiText = null;
+      if (mode !== "temp") {
+        status("fetching final answer…");
+        apiText = await apiAnswer(qPrefix, 900000).catch(() => null);
+      }
+
       status("waiting for the answer…");
       // Thinking models can reason for 5+ minutes before any assistant DOM
       // node exists — the stop button is the reliable "generation started"
@@ -393,7 +420,7 @@
       const stopSel =
         'button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop streaming"]';
       const started = () =>
-        turns() > prevCount || !!document.querySelector(stopSel);
+        apiText || turns() > prevCount || !!document.querySelector(stopSel);
       t0 = Date.now();
       while (!started() && Date.now() - t0 < 180000) await sleep(500);
       if (!started())
@@ -401,17 +428,8 @@
           "no assistant turn started within 180s — question rejected or ChatGPT stuck?",
         );
       t0 = Date.now();
-      while (document.querySelector(stopSel) && Date.now() - t0 < 900000)
+      while (!apiText && document.querySelector(stopSel) && Date.now() - t0 < 900000)
         await sleep(500);
-
-      // authoritative completion: the conversation API reports
-      // finished_successfully — render-independent, works in background tabs.
-      // Temp chats have no retrievable id, so they fall to the DOM gates.
-      let apiText = null;
-      if (mode !== "temp") {
-        status("fetching final answer…");
-        apiText = await apiAnswer(qPrefix, 900000).catch(() => null);
-      }
       if (!apiText) {
         // DOM fallback: the copy action under the last message appears only
         // when it fully rendered — but selectors drift (localized aria-labels,
@@ -422,18 +440,14 @@
         status("waiting for the full answer…");
         t0 = Date.now();
         while (Date.now() - t0 < 120000) {
-          const asst = document.querySelectorAll(
-            '[data-message-author-role="assistant"]',
-          );
+          const asst = messageTurns(ASSISTANT_TURN);
           if (asst.length && asst[asst.length - 1].querySelector(copySel))
             break;
           await sleep(500);
         }
       }
       if (apiText) {
-        const els = document.querySelectorAll(
-          '[data-message-author-role="assistant"]',
-        );
+        const els = messageTurns(ASSISTANT_TURN);
         const artifacts = await collectArtifacts(_id, [...els].slice(prevCount));
         status("done");
         return {
@@ -449,9 +463,7 @@
       let last = "";
       let same = 0;
       for (let i = 0; i < 60; i++) {
-        const els = document.querySelectorAll(
-          '[data-message-author-role="assistant"]',
-        );
+        const els = messageTurns(ASSISTANT_TURN);
         const txt = els.length ? els[els.length - 1].innerText : "";
         if (txt && txt === last) {
           if (++same >= 3) break;
@@ -459,9 +471,7 @@
         last = txt;
         await sleep(1500);
       }
-      const els = document.querySelectorAll(
-        '[data-message-author-role="assistant"]',
-      );
+      const els = messageTurns(ASSISTANT_TURN);
       const el = els[els.length - 1];
       if (!el) throw new Error("no assistant message to extract");
       const answer = domToMarkdown(el);
@@ -473,8 +483,8 @@
       // a failed ask must not leave our draft wedged in the composer — the
       // next ask refuses to overwrite a draft, so clear ours on the way out
       try {
-        const c = document.querySelector("#prompt-textarea");
-        if (c && (c.textContent || "").trim()) {
+        const c = composer;
+        if (filledComposer && c?.isConnected && (c.textContent || "").trim()) {
           c.focus();
           document.execCommand("selectAll");
           document.execCommand("delete");

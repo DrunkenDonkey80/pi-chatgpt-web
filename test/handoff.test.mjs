@@ -508,4 +508,34 @@ assert.ok(parseFetch("chatgpt.com/c/abc last"), "bare domain accepted");
   fs.rmSync(path.join(SPOOL, "artifacts-t1"), { recursive: true, force: true });
 }
 
+// NEED replies must keep the keyed advisor destination. Use an isolated spool
+// and a fake bridge; never contact the browser or touch its live runtime state.
+{
+  const fixture = path.join(tmp, "bridge-fixture");
+  const spool = path.join(fixture, "spool");
+  fs.mkdirSync(spool, { recursive: true });
+  for (const name of ["index.ts", "state.ts"])
+    fs.copyFileSync(new URL(`../${name}`, import.meta.url), path.join(fixture, name));
+  fs.writeFileSync(path.join(spool, "heartbeat.json"), JSON.stringify({ ts: Date.now(), pid: 1 }));
+  const { askChatGPT } = await import(path.join(fixture, "index.ts"));
+  const commands = [];
+  const bridgeCtx = {
+    ui: { notify(message) {
+      if (!message.startsWith("sent to ChatGPT")) return;
+      const file = fs.readdirSync(spool).find((name) => name.startsWith("command-"));
+      const command = JSON.parse(fs.readFileSync(path.join(spool, file), "utf8"));
+      commands.push(command);
+      fs.rmSync(path.join(spool, file));
+      fs.writeFileSync(path.join(spool, `result-${command.id}.json`), JSON.stringify({
+        msg: { ok: true, answer: commands.length === 1 ? "NEED: one.txt" : "file read OK",
+          url: "https://chatgpt.com/g/g-p-test/c/00000000-0000-0000-0000-000000000000" },
+      }));
+    } },
+  };
+  const answer = await askChatGPT({}, bridgeCtx, "Read one.txt", "advisor", undefined, "repo-read");
+  assert.equal(answer.answer, "file read OK");
+  assert.deepEqual(commands.map((command) => command.threadKey), ["repo-read", "repo-read"]);
+  assert.match(commands[1].question, /--- one\.txt ---\nAAA/, "NEED supplies the workspace file");
+}
+
 console.log("handoff + NEED self-check: all assertions passed");
