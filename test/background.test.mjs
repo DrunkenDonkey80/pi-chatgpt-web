@@ -10,6 +10,9 @@ const source = fs.readFileSync(
 );
 const posted = [];
 const asks = [];
+const openedUrls = [];
+const projectConversation = "https://chatgpt.com/g/g-p-test-project/c/00000000-0000-0000-0000-000000000000";
+let projectReply = false;
 const blockedAsks = new Map();
 let onPortMessage;
 let chunkError = false;
@@ -52,7 +55,10 @@ const chrome = {
     },
   },
   tabs: {
-    create: async () => ({ id: 1, url: "https://chatgpt.com/" }),
+    create: async ({ url }) => {
+      openedUrls.push(url);
+      return { id: 1, url };
+    },
     query: async () => [],
     sendMessage: async (_id, msg) => {
       if (msg.type === "ping") return { pong: true };
@@ -62,7 +68,7 @@ const chrome = {
         await new Promise((resolve) => blockedAsks.set(blocked, resolve));
       return {
         ok: true,
-        url: "https://chatgpt.com/c/00000000-0000-0000-0000-000000000000",
+        url: projectReply ? projectConversation : "https://chatgpt.com/c/00000000-0000-0000-0000-000000000000",
         question: msg.question,
         answer: "ok",
       };
@@ -236,5 +242,23 @@ assert.ok(
   ),
   "keyed thread url persisted",
 );
+
+// Project conversations use /g/<project>/c/<id>, not the root /c/<id> route.
+// Remember them so NEED file replies and later asks stay in the same thread.
+projectReply = true;
+onPortMessage({
+  type: "command", id: "project-first", mode: "advisor", workspace: "/tmp/project-thread",
+  projectUrl: "https://chatgpt.com/g/g-p-test-project/project", question: "first",
+});
+assert.equal((await result("project-first")).ok, true);
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(persistent.advisors["/tmp/project-thread"].url, projectConversation);
+onPortMessage({
+  type: "command", id: "project-followup", mode: "advisor", workspace: "/tmp/project-thread",
+  projectUrl: "https://chatgpt.com/g/g-p-test-project/project", question: "file reply",
+});
+assert.equal((await result("project-followup")).ok, true);
+assert.equal(openedUrls.at(-1), projectConversation, "follow-up reopens the saved project conversation");
+assert.equal(asks.at(-1).question, "file reply", "follow-up is not labeled as a fresh chat");
 
 console.log("background self-check: all assertions passed");

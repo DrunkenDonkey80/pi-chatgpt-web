@@ -231,7 +231,7 @@ async function handleCommand(cmd) {
     if (
       res?.ok &&
       typeof res.url === "string" &&
-      /^https:\/\/chatgpt\.com\/c\//.test(res.url)
+      /^https:\/\/chatgpt\.com\/(?:g\/[^/]+\/)?c\//.test(res.url)
     ) {
       const { advisors = {} } = await chrome.storage.local.get("advisors");
       advisors[storeKey] = { ...(advisors[storeKey] || {}), url: res.url };

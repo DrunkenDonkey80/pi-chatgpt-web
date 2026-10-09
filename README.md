@@ -182,7 +182,7 @@ Driving the web UI is automated use of ChatGPT; that's your account risk to own.
 
 ## Development
 
-- Self-checks: `node --experimental-strip-types test/handoff.test.mjs && node test/background.test.mjs`
+- Self-checks: `node --experimental-strip-types test/handoff.test.mjs && node test/background.test.mjs && node test/content.test.mjs`
 - After editing `extension/`, re-run `node install.js` and reload the unpacked extension.
 - Architecture history and the why of every decision: `PLAN.md`, `RESEARCH.md`,
   `spike/NOTES.md`.
